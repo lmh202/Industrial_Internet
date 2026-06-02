@@ -67,7 +67,7 @@ class RobotArmController:
 
     def move_tip_to(self, target_pos: list,
                     target_orient: list = None,
-                    steps: int = IK_ANIM_STEPS):
+                    steps: int = IK_ANIM_STEPS) -> bool:
         """
         IK 解算 + 动画。
 
@@ -89,7 +89,7 @@ class RobotArmController:
                    for a, b in zip(tip_pos, target_pos)) ** 0.5
 
         if dist <= MAX_PICK_DISTANCE:
-            return  # 一次就到位
+            return True  # 一次就到位
 
         # 偏差大 → 逐个尝试其他 J1 偏移解
         for j1_offset in [math.pi/4, -math.pi/4,
@@ -106,7 +106,7 @@ class RobotArmController:
             new_dist = sum((a - b) ** 2
                            for a, b in zip(tip_pos, target_pos)) ** 0.5
             if new_dist <= MAX_PICK_DISTANCE:
-                return  # 找到好解
+                return True  # 找到好解
 
             # 如果这个也不行，继续试下一个
 
@@ -117,6 +117,8 @@ class RobotArmController:
         if final_dist > MAX_PICK_DISTANCE:
             print(f'    [WARN] [{self.name}] IK 无法到达: '
                   f'{final_dist*1000:.0f}mm')
+            return False
+        return True
 
     def move_to_home(self, steps: int = 25):
         """回到初始姿态"""
@@ -130,7 +132,7 @@ class RobotArmController:
     # 工件附着/分离（模拟夹爪）
     # ----------------------------------------------------------
 
-    def pick(self, part_handle: int):
+    def pick(self, part_handle: int) -> bool:
         """吸附工件到末端（带距离校验 + 自动补偿）"""
         # 检查末端到工件的距离
         tip_pos = self.get_tip_position()
@@ -155,15 +157,16 @@ class RobotArmController:
             if dist > MAX_PICK_DISTANCE:
                 print(f'    [WARN] [{self.name}] 补偿后仍超距: '
                       f'{dist*1000:.0f}mm -- 拒绝抓取')
-                return  # 不抓取，不传送
+                return False  # 不抓取，不传送
         else:
             print(f'     [{self.name}] 抓取距离: {dist*1000:.1f}mm')
 
         self._attached_part = part_handle
         self.sim.setObjectParent(part_handle, self.tip_handle, True)
+        return True
 
     def release(self, target_pos: list = None,
-                parent_handle: int = -1):
+                parent_handle: int = -1) -> bool:
         """释放工件"""
         if self._attached_part is not None:
             self.sim.setObjectParent(self._attached_part, parent_handle, True)
@@ -171,9 +174,11 @@ class RobotArmController:
                 self.sim.setObjectPosition(
                     self._attached_part, -1, target_pos)
             self._attached_part = None
+            return True
+        return False
 
     def release_to_shuttle(self, shuttle_handle: int, z_offset: float,
-                           local_offset: tuple[float, float] = (0.0, 0.0)):
+                           local_offset: tuple[float, float] = (0.0, 0.0)) -> bool:
         """释放工件到滑块上"""
         if self._attached_part is not None:
             self.sim.setObjectParent(
@@ -182,6 +187,8 @@ class RobotArmController:
                 self._attached_part, shuttle_handle,
                 [local_offset[0], local_offset[1], z_offset])
             self._attached_part = None
+            return True
+        return False
 
     @property
     def is_holding(self) -> bool:
@@ -191,7 +198,7 @@ class RobotArmController:
     # 高级动作序列
     # ----------------------------------------------------------
 
-    def pick_from_position(self, pos: list, part_handle: int):
+    def pick_from_position(self, pos: list, part_handle: int) -> bool:
         """
         完整的取件动作：
         1. 移到安全高度 → 2. 下降到目标上方 → 3. 吸附 → 4. 提起
@@ -200,7 +207,8 @@ class RobotArmController:
         """
         # 先到目标上方（安全高度）
         above_pos = [pos[0], pos[1], SAFE_Z]
-        self.move_tip_to(above_pos, TIP_DOWN_ORIENT, IK_ANIM_STEPS)
+        if not self.move_tip_to(above_pos, TIP_DOWN_ORIENT, IK_ANIM_STEPS):
+            return False
 
         # 刷新工件实时坐标（可能跟着滑块移动过）
         real_pos = self.sim.getObjectPosition(part_handle, -1)
@@ -208,35 +216,39 @@ class RobotArmController:
         # 下降到工件实时位置上方
         approach_pos = [real_pos[0], real_pos[1],
                         real_pos[2] + GRASP_CLEARANCE]
-        self.move_tip_to(approach_pos, TIP_DOWN_ORIENT, IK_ANIM_STEPS_FAST)
+        if not self.move_tip_to(approach_pos, TIP_DOWN_ORIENT, IK_ANIM_STEPS_FAST):
+            return False
 
         # 吸附工件
-        self.pick(part_handle)
+        if not self.pick(part_handle):
+            return False
 
         # 提起
         lift_pos = [real_pos[0], real_pos[1], SAFE_Z]
-        self.move_tip_to(lift_pos, TIP_DOWN_ORIENT, IK_ANIM_STEPS_FAST)
+        return self.move_tip_to(lift_pos, TIP_DOWN_ORIENT, IK_ANIM_STEPS_FAST)
 
     def place_at_position(self, pos: list,
                           parent_handle: int = -1,
                           z_offset: float = 0.0,
-                          local_offset: tuple[float, float] = (0.0, 0.0)):
+                          local_offset: tuple[float, float] = (0.0, 0.0)) -> bool:
         """
         完整的放件动作：
         1. 移到目标上方 → 2. 下降 → 3. 释放到末端实际位置 → 4. 提起
 
-        如果 IK 无法到达目标，就在末端实际位置释放（就地丢下）。
+        如果 IK 无法到达目标，返回失败并保持工件吸附，交由上层流程中断。
         """
         if self._attached_part is None:
-            return
+            return False
 
         # 目标上方（安全高度）
         above_pos = [pos[0], pos[1], SAFE_Z]
-        self.move_tip_to(above_pos, TIP_DOWN_ORIENT, IK_ANIM_STEPS)
+        if not self.move_tip_to(above_pos, TIP_DOWN_ORIENT, IK_ANIM_STEPS):
+            return False
 
         # 下降到放置位置上方
         release_pos = [pos[0], pos[1], pos[2] + GRASP_CLEARANCE]
-        self.move_tip_to(release_pos, TIP_DOWN_ORIENT, IK_ANIM_STEPS_FAST)
+        if not self.move_tip_to(release_pos, TIP_DOWN_ORIENT, IK_ANIM_STEPS_FAST):
+            return False
 
         # 检查末端实际位置
         tip_pos = self.get_tip_position()
@@ -244,17 +256,16 @@ class RobotArmController:
                    for a, b in zip(tip_pos, release_pos)) ** 0.5
 
         if dist > MAX_PICK_DISTANCE:
-            # 到不了 → 就地丢下（仅解除绑定，不移动工件）
             print(f'    [WARN] [{self.name}] 放置偏差 {dist*1000:.0f}mm, '
-                  f'就地丢下')
-            self.sim.setObjectParent(self._attached_part, -1, True)
-            self._attached_part = None
+                  f'拒绝释放')
+            return False
         else:
             # 正常释放
             if parent_handle != -1:
-                self.release_to_shuttle(parent_handle, z_offset, local_offset)
+                released = self.release_to_shuttle(parent_handle, z_offset, local_offset)
             else:
-                self.release(tip_pos)
+                released = self.release(tip_pos)
 
         # 提起
-        self.move_tip_to(above_pos, TIP_DOWN_ORIENT, IK_ANIM_STEPS_FAST)
+        lifted = self.move_tip_to(above_pos, TIP_DOWN_ORIENT, IK_ANIM_STEPS_FAST)
+        return released and lifted

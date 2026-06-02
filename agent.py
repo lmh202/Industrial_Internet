@@ -6,7 +6,7 @@ import json
 import re
 from typing import Any
 
-from config import API_KEY, BASE_MODEL, BASE_URL
+from config import API_KEY, BASE_MODEL, BASE_URL, LLM_TIMEOUT
 from llm_client import LLMError, OpenAICompatibleClient
 
 
@@ -16,14 +16,25 @@ SYSTEM_PROMPT = """
 You are a manufacturing task parser. Convert the user's Chinese or English
 instruction into compact JSON only.
 
-Return schema:
-{"tasks":[{"product":"car|phone","quantity":1}]}
+Return exactly one JSON object with this shape:
+{"tasks":[{"product":"car","quantity":1}]}
 
 Rules:
-- product must be "car" for vehicle/car tasks or "phone" for phone tasks.
+- The only valid product strings are "car" and "phone".
+- Never output "car|phone" as a product value.
+- Use "car" for 车, 车辆, 汽车, vehicle, car, cars.
+- Use "phone" for 手机, phone, phones.
 - quantity must be a positive integer.
 - preserve the order mentioned by the user.
 - do not include markdown or explanations.
+
+Examples:
+User: 生产一辆车
+Output: {"tasks":[{"product":"car","quantity":1}]}
+User: 连续生产一辆车和两部手机
+Output: {"tasks":[{"product":"car","quantity":1},{"product":"phone","quantity":2}]}
+User: produce 2 phones and 1 car
+Output: {"tasks":[{"product":"phone","quantity":2},{"product":"car","quantity":1}]}
 """
 
 
@@ -35,7 +46,7 @@ class ProductionAgent:
     def __init__(self, llm_client: OpenAICompatibleClient | None = None,
                  allow_rule_fallback: bool = True):
         self.llm_client = llm_client or OpenAICompatibleClient(
-            BASE_MODEL, BASE_URL, API_KEY)
+            BASE_MODEL, BASE_URL, API_KEY, timeout=LLM_TIMEOUT)
         self.allow_rule_fallback = allow_rule_fallback
 
     def run(self, prompt: str) -> list[dict[str, int | str]]:

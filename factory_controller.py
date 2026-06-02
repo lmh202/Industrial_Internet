@@ -30,6 +30,10 @@ class SceneObjectError(RuntimeError):
     """Raised when required scene objects are missing."""
 
 
+class ProductionStepError(RuntimeError):
+    """Raised when a required pick/place/move step cannot be completed."""
+
+
 class FactoryController:
     def __init__(self, sim, dt: float = SIM_DT,
                  render_delay: float = SIM_RENDER_DELAY):
@@ -68,10 +72,22 @@ class FactoryController:
     def produce_phone(self, quantity: int = 1):
         self.produce_plan([{"product": "phone", "quantity": quantity}])
 
+    def demo_mid_transfer(self):
+        """Demonstrate Robot_Put_Mid moving one part from line A to line B."""
+        print("[Factory] start Robot_Put_Mid transfer demo")
+        part = self._fresh_part("car_frame")
+        self._load_part_to_shuttle(
+            "line_a", self.arms["put_a"], part, self.shuttles["line_a"],
+            self.shuttle_handles["line_a"], LINE_A_CENTER_X, Y_PUT,
+            SHUTTLE_PART_Z)
+        self.transfer_part_between_lines(part, "line_a", "line_b", y=Y_ASSEM)
+        print("[Factory] Robot_Put_Mid transfer demo complete")
+
     def _init_scene(self):
         self.arms = {
             "put_a": self._arm("Robot_Put_A"),
             "put_b": self._arm("Robot_Put_B"),
+            "put_mid": self._arm("Robot_Put_Mid"),
             "assemble_car": self._arm("Robot_Assemble_Car"),
             "assemble_phone": self._arm("Robot_Assemble_Phone"),
             "pick_car": self._arm("Robot_Pick_Car"),
@@ -211,6 +227,53 @@ class FactoryController:
         self.sim.setObjectPosition(handle, -1, self.part_stock_positions[name])
         return handle
 
+    def transfer_part_between_lines(self, part_handle: int,
+                                    source: str,
+                                    target: str,
+                                    y: float = Y_ASSEM,
+                                    target_offset: tuple[float, float] = (0.0, 0.0)):
+        """Use Robot_Put_Mid to move a part from one line shuttle to the other."""
+        if source not in self.shuttles or target not in self.shuttles:
+            raise ValueError(f"Unknown transfer line: {source} -> {target}")
+
+        source_x = self._mid_handoff_x(source)
+        target_x = self._mid_handoff_x(target)
+        source_shuttle = self.shuttles[source]
+        target_shuttle = self.shuttles[target]
+        target_handle = self.shuttle_handles[target]
+
+        self._move_shuttle(source, source_shuttle, source_x, y,
+                           f"mid_transfer_{source}_source")
+        self._move_shuttle(target, target_shuttle, target_x, y,
+                           f"mid_transfer_{target}_target")
+
+        arm = self.arms["put_mid"]
+        self._pick_and_hold(arm, part_handle)
+        target_pos = [
+            target_x + target_offset[0],
+            y + target_offset[1],
+            SEGMENT_HEIGHT + SHUTTLE_PART_Z,
+        ]
+        self._place_held_on_shuttle(
+            arm, part_handle, target_pos, target_handle,
+            SHUTTLE_PART_Z, local_offset=target_offset)
+
+    def _line_x(self, line: str) -> float:
+        if line == "line_a":
+            return LINE_A_CENTER_X
+        if line == "line_b":
+            return LINE_B_CENTER_X
+        raise ValueError(f"Unknown line: {line}")
+
+    def _mid_handoff_x(self, line: str) -> float:
+        min_gap = SHUTTLE_SIZE_X + 2 * SHUTTLE_SAFE_MARGIN + 0.02
+        inner_x = min_gap / 2
+        if line == "line_a":
+            return -inner_x
+        if line == "line_b":
+            return inner_x
+        raise ValueError(f"Unknown line: {line}")
+
     def _move_shuttle(self, owner: str, shuttle, x: float, y: float, key: str):
         with self.collision.reserve(owner, key, x, y):
             for wx, wy in self._avoidance_path(owner, shuttle, x, y):
@@ -274,38 +337,50 @@ class FactoryController:
                               local_offset: tuple[float, float] = (0.0, 0.0)):
         self._move_shuttle(owner, shuttle, x, y, f"{arm.name}_load")
         part_pos = self.sim.getObjectPosition(part_handle, -1)
-        arm.pick_from_position(part_pos, part_handle)
+        picked = arm.pick_from_position(part_pos, part_handle)
+        self._require_action(picked, arm, "load pick")
+        self._require_holding(arm, part_handle, "load pick")
         place_pos = [
             x + local_offset[0],
             y + local_offset[1],
             SEGMENT_HEIGHT + SHUTTLE_PART_Z,
         ]
-        arm.place_at_position(
+        placed = arm.place_at_position(
             place_pos,
             parent_handle=shuttle_handle,
             z_offset=z_offset,
             local_offset=local_offset)
+        self._require_action(placed, arm, "load place")
         arm.move_to_home()
 
     def _pick_and_hold(self, arm, part_handle):
         part_pos = self.sim.getObjectPosition(part_handle, -1)
-        arm.pick_from_position(part_pos, part_handle)
+        picked = arm.pick_from_position(part_pos, part_handle)
+        self._require_action(picked, arm, "pick")
+        self._require_holding(arm, part_handle, "pick")
 
     def _place_held_on_shuttle(self, arm, held_part, target_pos, shuttle_handle,
-                               z_offset, attach_to=None):
-        arm.place_at_position(target_pos, parent_handle=shuttle_handle,
-                              z_offset=z_offset)
+                               z_offset, attach_to=None,
+                               local_offset: tuple[float, float] = (0.0, 0.0)):
+        placed = arm.place_at_position(
+            target_pos, parent_handle=shuttle_handle,
+            z_offset=z_offset, local_offset=local_offset)
+        self._require_action(placed, arm, "place")
         if attach_to is not None:
             self.sim.setObjectParent(held_part, attach_to, True)
         arm.move_to_home()
 
     def _finish_product(self, arm, product_handle, output_bin_handle):
         product_pos = self.sim.getObjectPosition(product_handle, -1)
-        arm.pick_from_position(product_pos, product_handle)
+        picked = arm.pick_from_position(product_pos, product_handle)
+        self._require_action(picked, arm, "finish pick")
+        self._require_holding(arm, product_handle, "finish pick")
         bin_pos = self.sim.getObjectPosition(output_bin_handle, -1)
         drop = [bin_pos[0], bin_pos[1], SEGMENT_HEIGHT + SHUTTLE_PART_Z]
-        arm.place_at_position(drop, parent_handle=output_bin_handle,
-                              z_offset=SHUTTLE_PART_Z)
+        placed = arm.place_at_position(
+            drop, parent_handle=output_bin_handle,
+            z_offset=SHUTTLE_PART_Z)
+        self._require_action(placed, arm, "finish place")
         arm.move_to_home()
 
     def _inspect(self, shuttle, owner: str, x: float, y: float):
@@ -315,6 +390,16 @@ class FactoryController:
             self.sim.step()
             if self.render_delay > 0:
                 time.sleep(self.render_delay)
+
+    def _require_action(self, ok: bool, arm, action: str):
+        if not ok:
+            raise ProductionStepError(
+                f"{arm.name} failed to complete required action: {action}")
+
+    def _require_holding(self, arm, part_handle: int, action: str):
+        if not arm.is_holding:
+            raise ProductionStepError(
+                f"{arm.name} did not hold part {part_handle} after {action}")
 
     def _arm(self, name: str) -> RobotArmController:
         self._object([name])

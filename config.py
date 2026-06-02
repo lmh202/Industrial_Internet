@@ -14,9 +14,11 @@ from scene_config import DT, INSPECT_STEPS, RENDER_DELAY, SHUTTLE_SPEED
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 # Required LLM configuration locations.
-BASE_MODEL = os.getenv("BASE_MODEL", "gpt-4o-mini")
-BASE_URL = os.getenv("BASE_URL", "https://api.openai.com/v1")
-API_KEY = os.getenv("API_KEY", "")
+# Defaults point to the course-required local Ollama deployment.
+BASE_MODEL = os.getenv("BASE_MODEL", "deepseek-r1:7b")
+BASE_URL = os.getenv("BASE_URL", "http://localhost:11434/v1")
+API_KEY = os.getenv("API_KEY", "ollama")
+LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "180"))
 
 COPPELIASIM_EXE = os.getenv(
     "COPPELIASIM_EXE",

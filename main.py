@@ -102,20 +102,31 @@ def _wait_for_simulation_stopped(sim, timeout: float = 10):
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         description="智能制造 AI Agent: natural language to CoppeliaSim control")
-    parser.add_argument("prompt", nargs="+", help="生产任务，如：生产一辆车")
+    parser.add_argument("prompt", nargs="*", help="生产任务，如：生产一辆车")
     parser.add_argument("--no-launch", action="store_true",
                         help="不自动启动 CoppeliaSim，只连接已运行实例")
     parser.add_argument("--parse-only", action="store_true",
                         help="只解析任务，不连接仿真")
+    parser.add_argument("--demo-mid-transfer", action="store_true",
+                        help="只演示 Robot_Put_Mid 跨产线转运，不执行产品生产")
     args = parser.parse_args(argv)
 
-    prompt = " ".join(args.prompt)
-    agent = ProductionAgent()
-    tasks = agent.run(prompt)
-    print(f"[Agent] 解析结果: {tasks_to_json(tasks)}")
+    if args.demo_mid_transfer and args.prompt:
+        parser.error("--demo-mid-transfer 不需要生产任务文本")
+    if args.demo_mid_transfer and args.parse_only:
+        parser.error("--demo-mid-transfer 不能与 --parse-only 同时使用")
+    if not args.demo_mid_transfer and not args.prompt:
+        parser.error("需要提供生产任务文本，或使用 --demo-mid-transfer")
 
-    if args.parse_only:
-        return 0
+    tasks = []
+    if args.prompt:
+        prompt = " ".join(args.prompt)
+        agent = ProductionAgent()
+        tasks = agent.run(prompt)
+        print(f"[Agent] 解析结果: {tasks_to_json(tasks)}")
+
+        if args.parse_only:
+            return 0
 
     proc = None
     sim = None
@@ -126,7 +137,10 @@ def main(argv=None) -> int:
         sim = connect_sim()
         configure_scene(sim)
         factory = FactoryController(sim)
-        factory.produce_plan(tasks)
+        if args.demo_mid_transfer:
+            factory.demo_mid_transfer()
+        else:
+            factory.produce_plan(tasks)
         return 0
     finally:
         if sim is not None:

@@ -11,15 +11,22 @@
 pip install coppeliasim-zmqremoteapi-client numpy
 ```
 
-如果要使用大模型解析自然语言，请在环境变量或 `config.py` 中配置：
+默认使用本地 Ollama 模型解析自然语言，不调用云端 API。请先确认本机已安装并启动 Ollama，且已拉取课程使用的模型：
 
 ```bash
-set BASE_MODEL=gpt-4o-mini
-set BASE_URL=https://api.openai.com/v1
-set API_KEY=你的 API Key
+ollama pull deepseek-r1:7b
 ```
 
-未配置 `API_KEY` 时，程序会使用本地规则解析作为演示兜底，支持“生产一辆车”“生产两部手机”等常见表达。
+默认配置位于 `config.py`：
+
+```bash
+set BASE_MODEL=deepseek-r1:7b
+set BASE_URL=http://localhost:11434/v1
+set API_KEY=ollama
+set LLM_TIMEOUT=180
+```
+
+其中 `API_KEY=ollama` 只是为了兼容 OpenAI-style 客户端，本地 Ollama 服务不会校验该值。环境变量仍可覆盖这些默认值。模型不可用或输出无法校验时，程序会使用本地规则解析作为演示兜底，支持“生产一辆车”“生产两部手机”等常见表达。
 
 ## 文件说明
 
@@ -29,7 +36,7 @@ Project/
 │   ├── ACOPOS6D_MotorSegment.ttm   # 电机段模型
 │   └── ACOPOS6D_Shuttle.ttm        # 滑块模型
 ├── scenes/
-│   └── assembly_line.ttt            # 双产线场景（7臂6滑块）
+│   └── assembly_line.ttt            # 双产线场景（7臂4滑块）
 ├── robot_arm.py                     # 机械臂控制器（pick/place）
 ├── mirobot_ik.py                    # 纯 Python 数值 IK 解算器 (DLS)
 ├── shuttle_controller.py            # 滑块运动控制器（梯形速度规划）
@@ -60,6 +67,12 @@ Project/
 python main.py "生产一辆车"
 python main.py "生产两部手机"
 python main.py "连续生产一辆车和两部手机"
+```
+
+只演示 `Robot_Put_Mid` 跨产线转运：
+
+```bash
+python main.py --demo-mid-transfer
 ```
 
 只测试自然语言解析、不连接仿真：
@@ -156,11 +169,14 @@ sim.stopSimulation()
 | 滑块运输 | 运动学模式，梯形速度规划（2 m/s / 20 m/s²） |
 | Agent 解析 | OpenAI 兼容接口输出结构化 JSON，未配置 API Key 时规则兜底 |
 | 任务执行 | LLM 只解析产品和数量，车辆/手机工艺路线由确定性控制器执行 |
-| 防穿模 | 基于滑块矩形占用与关键工位 reservation 的运行前检查 |
+| 中间转运 | `Robot_Put_Mid` 支持将工件从一侧滑块搬运到另一侧滑块，可用 `--demo-mid-transfer` 单独展示 |
+| 摄像头质检 | 当前实现为滑块到达对应 Camera 工位后的停顿等待，不做图像识别判定 |
+| 防穿模 | 基于滑块矩形占用与关键工位 reservation 的运行前检查；主生产使用 A/B 两个执行滑块，A2/B2 作为已占用滑块纳入避障 |
 
 ## 测试
 
 ```bash
 python -m unittest discover -s tests
 python main.py --parse-only "连续生产一辆车和两部手机"
+python main.py --demo-mid-transfer
 ```

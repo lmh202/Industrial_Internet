@@ -1,6 +1,7 @@
 """OpenAI-compatible chat completions client."""
 
 import json
+import re
 import urllib.error
 import urllib.request
 
@@ -29,6 +30,7 @@ class OpenAICompatibleClient:
             "model": self.base_model,
             "temperature": 0,
             "response_format": {"type": "json_object"},
+            "stream": False,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -53,6 +55,54 @@ class OpenAICompatibleClient:
 
         try:
             content = data["choices"][0]["message"]["content"]
-            return json.loads(content)
+            return self._parse_json_content(content)
         except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
             raise LLMError(f"LLM response is not valid JSON: {data}") from exc
+
+    def _parse_json_content(self, content: str) -> dict:
+        if not isinstance(content, str):
+            raise json.JSONDecodeError("content is not a string", "", 0)
+
+        cleaned = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)
+        cleaned = cleaned.strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+            cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            pass
+
+        candidate = self._extract_first_json_object(cleaned)
+        return json.loads(candidate)
+
+    def _extract_first_json_object(self, text: str) -> str:
+        start = text.find("{")
+        if start < 0:
+            raise json.JSONDecodeError("no JSON object found", text, 0)
+
+        depth = 0
+        in_string = False
+        escape = False
+        for index in range(start, len(text)):
+            char = text[index]
+            if in_string:
+                if escape:
+                    escape = False
+                elif char == "\\":
+                    escape = True
+                elif char == '"':
+                    in_string = False
+                continue
+
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start:index + 1]
+
+        raise json.JSONDecodeError("unterminated JSON object", text, start)
