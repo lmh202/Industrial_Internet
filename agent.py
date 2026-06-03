@@ -52,18 +52,25 @@ class ProductionAgent:
     def run(self, prompt: str) -> list[dict[str, int | str]]:
         """Parse user text into validated production tasks."""
         errors = []
+        rule_tasks = None
+        if self.allow_rule_fallback:
+            try:
+                rule_tasks = self._parse_with_rules(prompt)
+            except TaskParseError as exc:
+                errors.append(str(exc))
+
         if self.llm_client.is_configured:
             try:
-                return self._validate_payload(
+                llm_tasks = self._validate_payload(
                     self.llm_client.chat_json(SYSTEM_PROMPT, prompt))
+                if self._same_product_order(rule_tasks, llm_tasks):
+                    return rule_tasks
+                return llm_tasks
             except (LLMError, TaskParseError) as exc:
                 errors.append(str(exc))
 
-        if self.allow_rule_fallback:
-            try:
-                return self._parse_with_rules(prompt)
-            except TaskParseError as exc:
-                errors.append(str(exc))
+        if rule_tasks is not None:
+            return rule_tasks
 
         detail = "; ".join(errors) if errors else "no parser available"
         raise TaskParseError(f"Cannot parse production task: {detail}")
@@ -103,15 +110,24 @@ class ProductionAgent:
         product_pattern = (
             r"(车辆|汽车|车|cars|car|手机|phones|phone)"
         )
-        for match in re.finditer(product_pattern, text):
+        product_matches = list(re.finditer(product_pattern, text))
+        previous_end = 0
+        previous_suffix_consumed = False
+        for index, match in enumerate(product_matches):
             product = self._normalize_product(match.group(1))
-            start = max(0, match.start() - 12)
-            end = min(len(text), match.end() + 4)
-            quantity = self._extract_quantity(
-                text[start:match.start()],
-                text[match.end():end],
+            next_start = (
+                product_matches[index + 1].start()
+                if index + 1 < len(product_matches)
+                else len(text)
+            )
+            quantity, suffix_consumed = self._extract_quantity(
+                text[previous_end:match.start()],
+                text[match.end():next_start],
+                prefix_consumed=previous_suffix_consumed,
             )
             matches.append({"product": product, "quantity": quantity})
+            previous_end = match.end()
+            previous_suffix_consumed = suffix_consumed
 
         if not matches:
             raise TaskParseError("No supported product keyword found.")
@@ -122,14 +138,25 @@ class ProductionAgent:
             return "car"
         return "phone"
 
-    def _extract_quantity(self, prefix: str, suffix: str = "") -> int:
-        before = self._quantity_candidates(prefix)
-        if before:
-            return sorted(before, key=lambda item: item[0])[-1][1]
+    def _extract_quantity(self, prefix: str, suffix: str = "",
+                          prefix_consumed: bool = False) -> tuple[int, bool]:
+        if not prefix_consumed:
+            before = self._quantity_candidates(prefix)
+            if before:
+                return sorted(before, key=lambda item: item[0])[-1][1], False
+
         after = self._quantity_candidates(suffix)
-        if after:
-            return sorted(after, key=lambda item: item[0])[0][1]
-        return 1
+        if after and self._starts_with_quantity(suffix, after):
+            return sorted(after, key=lambda item: item[0])[0][1], True
+        return 1, False
+
+    def _starts_with_quantity(self, text: str, candidates: list[tuple[int, int]]) -> bool:
+        if not candidates:
+            return False
+        stripped = text.lstrip()
+        leading_spaces = len(text) - len(stripped)
+        first_pos = sorted(candidates, key=lambda item: item[0])[0][0]
+        return first_pos == leading_spaces
 
     def _quantity_candidates(self, text: str) -> list[tuple[int, int]]:
         chinese_numbers = {
@@ -160,6 +187,14 @@ class ProductionAgent:
             else:
                 merged.append(dict(task))
         return merged
+
+    def _same_product_order(self, first, second) -> bool:
+        if first is None or second is None or len(first) != len(second):
+            return False
+        return all(
+            a["product"] == b["product"]
+            for a, b in zip(first, second)
+        )
 
 
 def tasks_to_json(tasks: list[dict[str, int | str]]) -> str:

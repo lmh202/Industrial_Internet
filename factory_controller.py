@@ -1,5 +1,6 @@
 """Deterministic CoppeliaSim factory workflow controller."""
 
+from collections import deque
 import time
 
 from collision_manager import CollisionManager
@@ -50,21 +51,10 @@ class FactoryController:
         self._init_scene()
 
     def produce_plan(self, tasks: list[dict]):
-        expanded = []
-        for task in tasks:
-            product = task["product"]
-            quantity = int(task.get("quantity", 1))
-            for _ in range(quantity):
-                expanded.append(product)
-
-        print(f"[Agent] plan: {expanded}")
-        for product in expanded:
-            if product == "car":
-                self._produce_one_car()
-            elif product == "phone":
-                self._produce_one_phone()
-            else:
-                raise ValueError(f"Unsupported product: {product}")
+        queues = self._build_line_queues(tasks)
+        print(f"[Agent] line queues: "
+              f"A={list(queues['line_a'])}, B={list(queues['line_b'])}")
+        self._run_line_scheduler(queues)
 
     def produce_car(self, quantity: int = 1):
         self.produce_plan([{"product": "car", "quantity": quantity}])
@@ -141,6 +131,63 @@ class FactoryController:
             shuttle.set_collision_checker(self.collision.checker_for(name))
 
     def _produce_one_car(self):
+        for _ in self._car_workflow():
+            pass
+
+    def _produce_one_phone(self):
+        for _ in self._phone_workflow():
+            pass
+
+    @staticmethod
+    def _build_line_queues(tasks: list[dict]) -> dict[str, deque[str]]:
+        queues = {"line_a": deque(), "line_b": deque()}
+        for task in tasks:
+            product = task["product"]
+            quantity = int(task.get("quantity", 1))
+            target_queue = None
+            if product == "car":
+                target_queue = queues["line_a"]
+            elif product == "phone":
+                target_queue = queues["line_b"]
+            else:
+                raise ValueError(f"Unsupported product: {product}")
+            for _ in range(quantity):
+                target_queue.append(product)
+        return queues
+
+    def _run_line_scheduler(self, queues: dict[str, deque[str]]):
+        active = {}
+        total = sum(len(queue) for queue in queues.values())
+        completed = 0
+        if total == 0:
+            return
+
+        while completed < total:
+            for line in ("line_a", "line_b"):
+                if line not in active and queues[line]:
+                    product = queues[line].popleft()
+                    active[line] = self._workflow_for_product(product)
+                    print(f"[Scheduler] {line} start {product}")
+
+            for line in ("line_a", "line_b"):
+                workflow = active.get(line)
+                if workflow is None:
+                    continue
+                try:
+                    step = next(workflow)
+                    print(f"[Scheduler] {line}: {step}")
+                except StopIteration:
+                    completed += 1
+                    del active[line]
+
+    def _workflow_for_product(self, product: str):
+        if product == "car":
+            return self._car_workflow()
+        if product == "phone":
+            return self._phone_workflow()
+        raise ValueError(f"Unsupported product: {product}")
+
+    def _car_workflow(self):
         print("[Factory] start car")
         frame = self._fresh_part("car_frame")
         base = self._fresh_part("car_base")
@@ -152,26 +199,36 @@ class FactoryController:
         self._load_part_to_shuttle(
             "line_a", self.arms["put_a"], frame, shuttle,
             shuttle_handle, LINE_A_CENTER_X, Y_PUT, SHUTTLE_PART_Z)
+        yield "car frame loaded"
         self._move_shuttle("line_a", shuttle, LINE_A_CENTER_X, Y_ASSEM, "car_frame_to_assembly")
+        yield "car frame moved to assembly"
         self._pick_and_hold(self.arms["assemble_car"], frame)
+        yield "car frame held by assembly arm"
         self._move_shuttle("line_a", shuttle, LINE_A_CENTER_X, Y_PUT, "car_frame_shuttle_return")
+        yield "car shuttle returned for base"
 
         # 2. The car base also comes from Shelf_A and returns to the same assembly station.
         self._load_part_to_shuttle(
             "line_a", self.arms["put_a"], base, shuttle,
             shuttle_handle, LINE_A_CENTER_X, Y_PUT, SHUTTLE_PART_Z)
+        yield "car base loaded"
         self._move_shuttle("line_a", shuttle, LINE_A_CENTER_X, Y_ASSEM, "car_base_to_assembly")
+        yield "car base moved to assembly"
         self._place_held_on_shuttle(
             self.arms["assemble_car"], frame, assemble_pos, shuttle_handle,
             SHUTTLE_PART_Z + ASSEMBLY_LAYER_Z, attach_to=base)
+        yield "car assembled"
 
         # 3. Assembled car continues to inspection and output bin.
         self._inspect(shuttle, "line_a", LINE_A_CENTER_X, Y_CAMERA)
+        yield "car inspected"
         self._move_shuttle("line_a", shuttle, LINE_A_CENTER_X, Y_POLISH, "car_to_pick")
+        yield "car moved to output"
         self._finish_product(self.arms["pick_car"], base, self.output_bins["line_a"])
         print("[Factory] car complete")
+        yield "car complete"
 
-    def _produce_one_phone(self):
+    def _phone_workflow(self):
         print("[Factory] start phone")
         base = self._fresh_part("phone_base")
         screen = self._fresh_part("screen")
@@ -185,37 +242,52 @@ class FactoryController:
         self._load_part_to_shuttle(
             "line_b", self.arms["put_b"], camera, shuttle,
             shuttle_handle, LINE_B_CENTER_X, Y_PUT, SHUTTLE_PART_Z)
+        yield "phone camera loaded"
         self._move_shuttle("line_b", shuttle, LINE_B_CENTER_X, Y_ASSEM, "camera_to_assembly")
+        yield "phone camera moved to assembly"
         self._pick_and_hold(self.arms["assemble_phone"], camera)
+        yield "phone camera held by assembly arm"
         self._move_shuttle("line_b", shuttle, LINE_B_CENTER_X, Y_PUT, "camera_shuttle_return")
+        yield "phone shuttle returned for base"
 
         # 2. Phone base is delivered from Shelf_B, then the camera is mounted.
         self._load_part_to_shuttle(
             "line_b", self.arms["put_b"], base, shuttle,
             shuttle_handle, LINE_B_CENTER_X, Y_PUT, SHUTTLE_PART_Z)
+        yield "phone base loaded"
         self._move_shuttle("line_b", shuttle, LINE_B_CENTER_X, Y_ASSEM, "phone_base_to_assembly")
+        yield "phone base moved to assembly"
         self._place_held_on_shuttle(
             self.arms["assemble_phone"], camera, assemble_pos, shuttle_handle,
             SHUTTLE_PART_Z + ASSEMBLY_LAYER_Z, attach_to=base)
+        yield "phone camera assembled"
 
         # 3. The same shuttle returns to Shelf_B with the partial phone.
         # Robot_Put_B places the screen in an offset slot so it does not overlap.
         self._move_shuttle("line_b", shuttle, LINE_B_CENTER_X, Y_PUT, "phone_base_return")
+        yield "phone shuttle returned for screen"
         self._load_part_to_shuttle(
             "line_b", self.arms["put_b"], screen, shuttle,
             shuttle_handle, LINE_B_CENTER_X, Y_PUT, SHUTTLE_PART_Z,
             local_offset=screen_slot)
+        yield "phone screen loaded"
         self._move_shuttle("line_b", shuttle, LINE_B_CENTER_X, Y_ASSEM, "screen_to_assembly")
+        yield "phone screen moved to assembly"
         self._pick_and_hold(self.arms["assemble_phone"], screen)
+        yield "phone screen held by assembly arm"
         self._place_held_on_shuttle(
             self.arms["assemble_phone"], screen, assemble_pos, shuttle_handle,
             SHUTTLE_PART_Z + 2 * ASSEMBLY_LAYER_Z, attach_to=base)
+        yield "phone assembled"
 
         # 4. Assembled phone continues to inspection and output bin.
         self._inspect(shuttle, "line_b", LINE_B_CENTER_X, Y_CAMERA)
+        yield "phone inspected"
         self._move_shuttle("line_b", shuttle, LINE_B_CENTER_X, Y_POLISH, "phone_to_pick")
+        yield "phone moved to output"
         self._finish_product(self.arms["pick_phone"], base, self.output_bins["line_b"])
         print("[Factory] phone complete")
+        yield "phone complete"
 
     def _fresh_part(self, name: str) -> int:
         template = self.part_templates[name]
