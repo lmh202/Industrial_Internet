@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 import shutil
 import time
 from pathlib import Path
 
-from agent import ProductionAgent, tasks_to_json
+from agent import ProductionAgent, plan_to_json
 from config import (
     API_KEY,
     BASE_MODEL,
@@ -25,6 +26,9 @@ from config import (
 )
 from factory_controller import FactoryController
 from llm_client import LLMError, OpenAICompatibleClient
+
+
+PLAN_OUTPUT_PATH = Path(__file__).resolve().parent / "plan.json"
 
 
 def launch_coppeliasim() -> subprocess.Popen | None:
@@ -142,17 +146,25 @@ def _model_help_status() -> str:
 
 
 def _run_prompt_once(sim, agent: ProductionAgent, prompt: str) -> None:
-    tasks = agent.run(prompt)
-    print(f"[Agent] 解析结果: {tasks_to_json(tasks)}")
+    plan = agent.run(prompt)
+    _save_plan(plan)
+    print(f"[Planner] 计划书: {plan_to_json(plan)}")
     configure_scene(sim)
     factory = FactoryController(sim)
-    factory.produce_plan(tasks)
+    factory.execute_tool_plan(plan)
 
 
 def _run_demo_mid_transfer_once(sim) -> None:
     configure_scene(sim)
     factory = FactoryController(sim)
     factory.demo_mid_transfer()
+
+
+def _save_plan(plan: dict) -> None:
+    PLAN_OUTPUT_PATH.write_text(
+        json.dumps(plan, ensure_ascii=False, indent=2),
+        encoding="utf-8")
+    print(f"[Planner] 计划已保存: {PLAN_OUTPUT_PATH}")
 
 
 def _interactive_loop(sim, agent: ProductionAgent) -> None:
@@ -189,7 +201,7 @@ def main(argv=None) -> int:
     parser.add_argument("--no-launch", action="store_true",
                         help="不自动启动 CoppeliaSim，只连接已运行实例")
     parser.add_argument("--parse-only", action="store_true",
-                        help="只解析任务，不连接仿真")
+                        help="只生成工具调用计划，不连接仿真")
     parser.add_argument("--demo-mid-transfer", action="store_true",
                         help="只演示 Robot_Put_Mid 跨产线转运，不执行产品生产")
     parser.add_argument("--unload-model", action="store_true",
@@ -217,8 +229,9 @@ def main(argv=None) -> int:
     agent = ProductionAgent()
     if args.parse_only:
         prompt = " ".join(args.prompt)
-        tasks = agent.run(prompt)
-        print(f"[Agent] 解析结果: {tasks_to_json(tasks)}")
+        plan = agent.run(prompt)
+        _save_plan(plan)
+        print(f"[Planner] 计划书: {plan_to_json(plan)}")
         return 0
 
     proc = None

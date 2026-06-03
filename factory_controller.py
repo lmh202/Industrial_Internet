@@ -35,6 +35,34 @@ class ProductionStepError(RuntimeError):
     """Raised when a required pick/place/move step cannot be completed."""
 
 
+TRANSPORT_TOOL_ROUTES = {
+    "Transport_A_Pick_Assemble": ("A", "pick", "assemble"),
+    "Transport_A_Assemble_Pick": ("A", "assemble", "pick"),
+    "Transport_A_Assemble_Camera": ("A", "assemble", "camera"),
+    "Transport_A_Camera_Output": ("A", "camera", "output"),
+    "Transport_A_Output_Pick": ("A", "output", "pick"),
+    "Transport_B_Pick_Assemble": ("B", "pick", "assemble"),
+    "Transport_B_Assemble_Pick": ("B", "assemble", "pick"),
+    "Transport_B_Assemble_Clear": ("B", "assemble", "clear"),
+    "Transport_B_Clear_Assemble": ("B", "clear", "assemble"),
+    "Transport_B_Assemble_Camera": ("B", "assemble", "camera"),
+    "Transport_B_Camera_Output": ("B", "camera", "output"),
+    "Transport_B_Output_Pick": ("B", "output", "pick"),
+    "Transport_B2_Clear_Pick": ("B2", "clear", "pick"),
+    "Transport_B2_Pick_Assemble": ("B2", "pick", "assemble"),
+    "Transport_B2_Assemble_Clear": ("B2", "assemble", "clear"),
+}
+
+STATION_Y = {
+    "pick": Y_PUT,
+    "assemble": Y_ASSEM,
+    "camera": Y_CAMERA,
+    "output": Y_POLISH,
+}
+
+B_CLEAR_OFFSET_X = SHUTTLE_SIZE_X + 2 * SHUTTLE_SAFE_MARGIN
+
+
 class FactoryController:
     def __init__(self, sim, dt: float = SIM_DT,
                  render_delay: float = SIM_RENDER_DELAY):
@@ -44,6 +72,7 @@ class FactoryController:
         self.arms: dict[str, RobotArmController] = {}
         self.shuttles: dict[str, ShuttleController] = {}
         self.shuttle_handles: dict[str, int] = {}
+        self.shuttle_initial_positions: dict[str, list[float]] = {}
         self.obstacle_handles: dict[str, int] = {}
         self.part_templates: dict[str, int] = {}
         self.part_stock_positions: dict[str, list[float]] = {}
@@ -87,16 +116,17 @@ class FactoryController:
         for name, aliases in {
             "line_a": ["Shuttle_A1", "Shuttle_A0", "Shuttle_A"],
             "line_b": ["Shuttle_B1", "Shuttle_B0", "Shuttle_B"],
+            "line_b_aux": ["Shuttle_B2"],
         }.items():
             handle = self._object(aliases)
             self.shuttle_handles[name] = handle
+            self.shuttle_initial_positions[name] = self.sim.getObjectPosition(handle, -1)
             self.shuttles[name] = ShuttleController(
                 self.sim, handle, name=name, dt=self.dt,
                 render_delay=self.render_delay)
 
         for name, aliases in {
             "static_a2": ["Shuttle_A2"],
-            "static_b2": ["Shuttle_B2"],
         }.items():
             try:
                 self.obstacle_handles[name] = self._object(aliases)
@@ -129,6 +159,223 @@ class FactoryController:
             self.sim, {**self.shuttle_handles, **self.obstacle_handles})
         for name, shuttle in self.shuttles.items():
             shuttle.set_collision_checker(self.collision.checker_for(name))
+
+    def execute_tool_plan(self, plan: dict):
+        self._init_tool_state()
+        steps = plan.get("steps", [])
+        print(f"[Planner] execute plan: {plan.get('plan_name', '<unnamed>')}")
+        for index, step in enumerate(steps, start=1):
+            tool = step["tool"]
+            args = step.get("args", {})
+            print(f"[Tool] {index:02d}. {tool} {args}")
+            self._execute_tool(tool, args)
+
+    def _init_tool_state(self):
+        self.tool_state = {
+            "station": {"A": "pick", "B": "pick", "B2": "clear"},
+            "parts": {"A": {}, "B": {}, "B2": {}},
+            "holding": {"A": None, "B": None, "mid": None},
+        }
+
+    def _execute_tool(self, tool: str, args: dict):
+        if tool in TRANSPORT_TOOL_ROUTES:
+            line, source, target = TRANSPORT_TOOL_ROUTES[tool]
+            self._tool_transport(line, source, target)
+            return
+        if tool == "Load_A_Pick":
+            self._tool_load("A", args)
+            return
+        if tool == "Load_B_Pick":
+            self._tool_load("B", args)
+            return
+        if tool == "Load_B2_Pick":
+            self._tool_load("B2", args)
+            return
+        if tool == "Hold_A_Assemble":
+            self._tool_hold("A", args)
+            return
+        if tool == "Hold_B_Assemble":
+            self._tool_hold("B", args)
+            return
+        if tool == "Hold_B2_Assemble":
+            self._tool_hold_from("B2", "B", args)
+            return
+        if tool == "Place_A_Assemble":
+            self._tool_place("A", args)
+            return
+        if tool == "Place_B_Assemble":
+            self._tool_place("B", args)
+            return
+        if tool == "Inspect_A":
+            self._tool_inspect("A")
+            return
+        if tool == "Inspect_B":
+            self._tool_inspect("B")
+            return
+        if tool == "Unload_A_Output":
+            self._tool_unload("A", args)
+            return
+        if tool == "Unload_B_Output":
+            self._tool_unload("B", args)
+            return
+        if tool == "Transport_A_B":
+            self._tool_cross_line("A", "B", args)
+            return
+        if tool == "Transport_B_A":
+            self._tool_cross_line("B", "A", args)
+            return
+        raise ProductionStepError(f"Unknown tool: {tool}")
+
+    def _tool_transport(self, line: str, source: str, target: str):
+        self._require_station(line, source)
+        owner = self._line_owner(line)
+        shuttle = self.shuttles[owner]
+        x, y = self._station_position(line, target)
+        self._move_shuttle(owner, shuttle, x, y, f"{line}_{source}_{target}")
+        self.tool_state["station"][line] = target
+
+    def _tool_load(self, line: str, args: dict):
+        self._require_station(line, "pick")
+        part = args["part"]
+        if part in self.tool_state["parts"][line]:
+            raise ProductionStepError(f"{part} is already on line {line}")
+        part_handle = self._fresh_part(part)
+        owner = self._line_owner(line)
+        local_offset = tuple(args.get("local_offset", (0.0, 0.0)))
+        self._load_part_to_shuttle(
+            owner,
+            self._put_arm(line),
+            part_handle,
+            self.shuttles[owner],
+            self.shuttle_handles[owner],
+            self._line_center_x(line),
+            Y_PUT,
+            SHUTTLE_PART_Z,
+            local_offset=local_offset)
+        self.tool_state["parts"][line][part] = part_handle
+
+    def _tool_hold(self, line: str, args: dict):
+        self._tool_hold_from(line, line, args)
+
+    def _tool_hold_from(self, source_line: str, arm_line: str, args: dict):
+        self._require_station(source_line, "assemble")
+        part = args["part"]
+        if self.tool_state["holding"][arm_line] is not None:
+            raise ProductionStepError(f"Line {arm_line} assemble arm is already holding")
+        if part not in self.tool_state["parts"][source_line]:
+            raise ProductionStepError(f"{part} is not on line {source_line} shuttle")
+        handle = self.tool_state["parts"][source_line].pop(part)
+        self._pick_and_hold(self._assemble_arm(arm_line), handle)
+        self.tool_state["holding"][arm_line] = {"part": part, "handle": handle}
+
+    def _tool_place(self, line: str, args: dict):
+        self._require_station(line, "assemble")
+        holding = self.tool_state["holding"][line]
+        part = args["part"]
+        if holding is None or holding["part"] != part:
+            raise ProductionStepError(f"Line {line} assemble arm is not holding {part}")
+
+        attach_to = args.get("attach_to")
+        attach_handle = None
+        if attach_to is not None:
+            if attach_to not in self.tool_state["parts"][line]:
+                raise ProductionStepError(f"{attach_to} is not on line {line} shuttle")
+            attach_handle = self.tool_state["parts"][line][attach_to]
+
+        layer = args.get("layer")
+        if layer is None:
+            layer = self._default_layer(part, attach_to)
+        local_offset = tuple(args.get("local_offset", (0.0, 0.0)))
+        target_pos = [
+            self._line_center_x(line) + local_offset[0],
+            Y_ASSEM + local_offset[1],
+            SEGMENT_HEIGHT + SHUTTLE_PART_Z,
+        ]
+        self._place_held_on_shuttle(
+            self._assemble_arm(line),
+            holding["handle"],
+            target_pos,
+            self.shuttle_handles[self._line_owner(line)],
+            SHUTTLE_PART_Z + float(layer) * ASSEMBLY_LAYER_Z,
+            attach_to=attach_handle,
+            local_offset=local_offset)
+
+        self.tool_state["holding"][line] = None
+        if attach_to is None:
+            self.tool_state["parts"][line][part] = holding["handle"]
+
+    def _tool_inspect(self, line: str):
+        self._require_station(line, "camera")
+        owner = self._line_owner(line)
+        self._inspect(self.shuttles[owner], owner, self._line_center_x(line), Y_CAMERA)
+
+    def _tool_unload(self, line: str, args: dict):
+        self._require_station(line, "output")
+        part = args["part"]
+        if part not in self.tool_state["parts"][line]:
+            raise ProductionStepError(f"{part} is not on line {line} shuttle")
+        handle = self.tool_state["parts"][line].pop(part)
+        self._finish_product(
+            self._pick_arm(line),
+            handle,
+            self.output_bins[self._line_owner(line)])
+
+    def _tool_cross_line(self, source: str, target: str, args: dict):
+        part = args["part"]
+        if part not in self.tool_state["parts"][source]:
+            raise ProductionStepError(f"{part} is not on line {source} shuttle")
+        handle = self.tool_state["parts"][source].pop(part)
+        self.transfer_part_between_lines(
+            handle,
+            self._line_owner(source),
+            self._line_owner(target),
+            y=Y_ASSEM,
+            target_offset=tuple(args.get("target_offset", (0.0, 0.0))))
+        self.tool_state["parts"][target][part] = handle
+        self.tool_state["station"][source] = "assemble"
+        self.tool_state["station"][target] = "assemble"
+
+    def _require_station(self, line: str, station: str):
+        current = self.tool_state["station"][line]
+        if current != station:
+            raise ProductionStepError(
+                f"Line {line} is at {current}, expected {station}")
+
+    def _line_owner(self, line: str) -> str:
+        if line == "A":
+            return "line_a"
+        if line == "B":
+            return "line_b"
+        if line == "B2":
+            return "line_b_aux"
+        raise ProductionStepError(f"Unknown line: {line}")
+
+    def _line_center_x(self, line: str) -> float:
+        return LINE_A_CENTER_X if line == "A" else LINE_B_CENTER_X
+
+    def _station_position(self, line: str, station: str):
+        if line == "B" and station == "clear":
+            return LINE_B_CENTER_X - B_CLEAR_OFFSET_X, Y_ASSEM
+        if line == "B2" and station == "clear":
+            pos = self.shuttle_initial_positions["line_b_aux"]
+            return pos[0], pos[1]
+        return self._line_center_x(line), STATION_Y[station]
+
+    def _put_arm(self, line: str):
+        return self.arms["put_a" if line == "A" else "put_b"]
+
+    def _assemble_arm(self, line: str):
+        return self.arms["assemble_car" if line == "A" else "assemble_phone"]
+
+    def _pick_arm(self, line: str):
+        return self.arms["pick_car" if line == "A" else "pick_phone"]
+
+    def _default_layer(self, part: str, attach_to) -> int:
+        if attach_to is None:
+            return 0
+        if part == "screen":
+            return 2
+        return 1
 
     def _produce_one_car(self):
         for _ in self._car_workflow():
@@ -338,7 +585,7 @@ class FactoryController:
         raise ValueError(f"Unknown line: {line}")
 
     def _mid_handoff_x(self, line: str) -> float:
-        min_gap = SHUTTLE_SIZE_X + 2 * SHUTTLE_SAFE_MARGIN + 0.02
+        min_gap = SHUTTLE_SIZE_X + 2 * SHUTTLE_SAFE_MARGIN + 0.005
         inner_x = min_gap / 2
         if line == "line_a":
             return -inner_x
@@ -384,7 +631,7 @@ class FactoryController:
     def _side_lane_x(self, owner: str, line_x: float,
                      obstacle_name: str, direction: int) -> float:
         half_box = SHUTTLE_SIZE_X / 2 + SHUTTLE_SAFE_MARGIN
-        min_center_gap = 2 * half_box + 0.01
+        min_center_gap = 2 * half_box + 0.005
         obstacle_handle = self.obstacle_handles.get(obstacle_name)
         if obstacle_handle is None:
             return line_x + direction * (min_center_gap / 2)

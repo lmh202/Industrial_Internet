@@ -58,12 +58,12 @@ PART_TOP_SIZE = [0.020, 0.028, 0.008]
 # ============================================================
 SHUTTLE_SIZE_X = 0.160             # 滑块宽 160mm
 SHUTTLE_SIZE_Y = 0.160             # 滑块长 160mm
-SHUTTLE_SAFE_MARGIN = 0.02         # 安全边距 20mm
+SHUTTLE_SAFE_MARGIN = 0.005        # 安全边距 5mm
 
 # 120×120 滑块
 SHUTTLE_SIZE_X_120 = 0.120         # 滑块宽 120mm
 SHUTTLE_SIZE_Y_120 = 0.120         # 滑块长 120mm
-SHUTTLE_SAFE_MARGIN_120 = 0.02     # 安全边距 20mm
+SHUTTLE_SAFE_MARGIN_120 = 0.005    # 安全边距 5mm
 
 # 机械臂底座近似尺寸
 ROBOT_BASE_SIZE = 0.10             # 底座近似直径 100mm

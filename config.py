@@ -18,7 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 BASE_MODEL = os.getenv("BASE_MODEL", "qwen3.6:latest")
 BASE_URL = os.getenv("BASE_URL", "http://localhost:11434/v1")
 API_KEY = os.getenv("API_KEY", "ollama")
-LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "180"))
+LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "360"))
 LLM_KEEP_ALIVE = os.getenv("LLM_KEEP_ALIVE", "-1")
 
 COPPELIASIM_EXE = os.getenv(

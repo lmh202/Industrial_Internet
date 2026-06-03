@@ -2,6 +2,7 @@
 
 import json
 import re
+import socket
 from typing import Optional
 import urllib.error
 import urllib.request
@@ -29,18 +30,22 @@ class OpenAICompatibleClient:
         if not self.is_configured:
             raise LLMError("LLM is not configured; API_KEY is empty.")
 
+        if self._uses_native_ollama():
+            return self._chat_json_native_ollama(system_prompt, user_prompt)
+
         payload = {
             "model": self.base_model,
             "temperature": 0,
             "response_format": {"type": "json_object"},
+            "max_tokens": 4096,
             "stream": False,
             "messages": [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+                {"role": "user", "content": f"/no_think\n{user_prompt}"},
             ],
         }
         if self.keep_alive:
-            payload["keep_alive"] = self.keep_alive
+            payload["keep_alive"] = self._native_keep_alive_value()
         body = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
             f"{self.base_url}/chat/completions",
@@ -55,7 +60,7 @@ class OpenAICompatibleClient:
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        except (urllib.error.URLError, TimeoutError, socket.timeout, json.JSONDecodeError) as exc:
             raise LLMError(f"LLM request failed: {exc}") from exc
 
         try:
@@ -65,6 +70,44 @@ class OpenAICompatibleClient:
             raise LLMError(f"LLM response is not valid JSON: {data}") from exc
         self.preload_model()
         return payload
+
+    def _chat_json_native_ollama(self, system_prompt: str, user_prompt: str) -> dict:
+        payload = {
+            "model": self.base_model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"/no_think\n{user_prompt}"},
+            ],
+            "format": "json",
+            "stream": False,
+            "think": False,
+            "options": {
+                "temperature": 0,
+                "num_predict": 4096,
+            },
+        }
+        if self.keep_alive:
+            payload["keep_alive"] = self._native_keep_alive_value()
+
+        body = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self._native_ollama_base_url()}/api/chat",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except (urllib.error.URLError, TimeoutError, socket.timeout, json.JSONDecodeError) as exc:
+            raise LLMError(f"LLM request failed: {exc}") from exc
+
+        try:
+            content = data["message"]["content"]
+            return self._parse_json_content(content)
+        except (KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise LLMError(f"LLM response is not valid JSON: {data}") from exc
 
     def preload_model(self) -> None:
         """Refresh Ollama keep_alive through its native API."""
@@ -77,7 +120,7 @@ class OpenAICompatibleClient:
             "model": self.base_model,
             "prompt": "",
             "stream": False,
-            "keep_alive": self.keep_alive,
+            "keep_alive": self._native_keep_alive_value(),
         }
         self._post_native_generate(payload, "LLM preload request failed")
 
@@ -104,7 +147,7 @@ class OpenAICompatibleClient:
         try:
             with urllib.request.urlopen(request, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        except (urllib.error.URLError, TimeoutError, socket.timeout, json.JSONDecodeError) as exc:
             raise LLMError(f"LLM status request failed: {exc}") from exc
 
         models = data.get("models", [])
@@ -178,6 +221,17 @@ class OpenAICompatibleClient:
             return self.base_url[:-3]
         return self.base_url
 
+    def _uses_native_ollama(self) -> bool:
+        return "11434" in self.base_url or "ollama" in self.base_url.lower()
+
+    def _native_keep_alive_value(self):
+        if isinstance(self.keep_alive, str):
+            try:
+                return int(self.keep_alive)
+            except ValueError:
+                return self.keep_alive
+        return self.keep_alive
+
     def _post_native_generate(self, payload: dict, error_message: str) -> None:
         body = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
@@ -190,5 +244,5 @@ class OpenAICompatibleClient:
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as resp:
                 resp.read()
-        except (urllib.error.URLError, TimeoutError) as exc:
+        except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
             raise LLMError(f"{error_message}: {exc}") from exc

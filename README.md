@@ -23,11 +23,11 @@ ollama pull qwen3.6
 set BASE_MODEL=qwen3.6:latest
 set BASE_URL=http://localhost:11434/v1
 set API_KEY=ollama
-set LLM_TIMEOUT=180
+set LLM_TIMEOUT=360
 set LLM_KEEP_ALIVE=-1
 ```
 
-其中 `API_KEY=ollama` 只是为了兼容 OpenAI-style 客户端，本地 Ollama 服务不会校验该值。`LLM_KEEP_ALIVE=-1` 表示普通调试运行后通过 Ollama 原生 `/api/generate` 空请求刷新模型常驻状态，避免每次运行都重新加载；需要释放显存/内存时再手动执行卸载命令。环境变量仍可覆盖这些默认值。模型不可用或输出无法校验时，程序会使用本地规则解析作为演示兜底，支持“生产一辆车”“生产两部手机”等常见表达。
+其中 `API_KEY=ollama` 只是为了兼容 OpenAI-style 客户端，本地 Ollama 服务不会校验该值。`LLM_KEEP_ALIVE=-1` 表示普通调试运行后通过 Ollama 原生请求刷新模型常驻状态，避免每次运行都重新加载；需要释放显存/内存时再手动执行卸载命令。环境变量仍可覆盖这些默认值。模型不可用、输出无法校验或计划包含非法工具时，程序会直接报错停止，不再回退到固定的“造车/造手机”模板。
 
 ## 文件说明
 
@@ -70,7 +70,7 @@ python main.py "生产两部手机"
 python main.py "连续生产一辆车和两部手机"
 ```
 
-程序完成首条任务后不会自动退出，而是进入会话模式继续等待输入。后续每输入一条新的生产指令，程序会先重新加载 `assembly_line.ttt` 复位 CoppeliaSim 场景，再解析并执行新任务。输入 `exit`、`quit` 或 `q` 退出会话。
+程序完成首条任务后不会自动退出，而是进入会话模式继续等待输入。后续每输入一条新的生产指令，程序会先让 LLM 输出工具调用计划书，再重新加载 `assembly_line.ttt` 复位 CoppeliaSim 场景并执行计划。输入 `exit`、`quit` 或 `q` 退出会话。
 
 也可以不带初始任务，直接启动仿真会话：
 
@@ -91,6 +91,67 @@ python main.py --demo-mid-transfer
 ```bash
 python main.py --parse-only "连续生产一辆车和两部手机"
 ```
+
+`--parse-only` 输出的是工具调用计划书，而不是旧版产品数量任务，例如：
+
+每次生成的计划都会保存到项目根目录 `plan.json`，下次运行会直接覆盖上一份计划。
+
+```json
+{
+  "plan_name": "one_car",
+  "steps": [
+    {"tool": "Load_A_Pick", "args": {"part": "car_frame"}},
+    {"tool": "Transport_A_Pick_Assemble", "args": {}},
+    {"tool": "Hold_A_Assemble", "args": {"part": "car_frame"}},
+    {"tool": "Transport_A_Assemble_Pick", "args": {}},
+    {"tool": "Load_A_Pick", "args": {"part": "car_base"}},
+    {"tool": "Transport_A_Pick_Assemble", "args": {}},
+    {"tool": "Place_A_Assemble", "args": {"part": "car_frame", "attach_to": "car_base", "layer": 1}},
+    {"tool": "Transport_A_Assemble_Camera", "args": {}},
+    {"tool": "Inspect_A", "args": {}},
+    {"tool": "Transport_A_Camera_Output", "args": {}},
+    {"tool": "Unload_A_Output", "args": {"part": "car_base"}}
+  ]
+}
+```
+
+允许的工具函数：
+
+```text
+Load_A_Pick(part, local_offset?)
+Load_B_Pick(part, local_offset?)
+Load_B2_Pick(screen)
+Transport_A_Pick_Assemble
+Transport_A_Assemble_Pick
+Transport_A_Assemble_Camera
+Transport_A_Camera_Output
+Transport_A_Output_Pick
+Transport_B_Pick_Assemble
+Transport_B_Assemble_Pick
+Transport_B_Assemble_Clear
+Transport_B_Clear_Assemble
+Transport_B_Assemble_Camera
+Transport_B_Camera_Output
+Transport_B_Output_Pick
+Transport_B2_Clear_Pick
+Transport_B2_Pick_Assemble
+Transport_B2_Assemble_Clear
+Hold_A_Assemble(part)
+Hold_B_Assemble(part)
+Hold_B2_Assemble(part)
+Place_A_Assemble(part, attach_to?, layer?, local_offset?)
+Place_B_Assemble(part, attach_to?, layer?, local_offset?)
+Inspect_A
+Inspect_B
+Unload_A_Output(part)
+Unload_B_Output(part)
+Transport_A_B(part, target_offset?)
+Transport_B_A(part, target_offset?)
+```
+
+手机产线使用 B1 作为主产品滑块、B2 作为辅助零件滑块。相机和底座组装完成后，B1 先从 Assemble 工位向内侧移动到刚好满足最小中心距的安全 clear 位；B2 从场景初始位回到 `Robot_Put_B` 下装载屏幕，再运输到 `Robot_Assemble_Phone` 下，由装配机械臂抓起屏幕。随后 B2 复位到场景初始位置，B1 回到 Assemble 工位，装配机械臂把屏幕放到底座上完成组装，再进入 Camera 质检。
+
+连续生产同一条产线的多个产品时，上一件产品 `Unload_*_Output` 后必须先通过 `Transport_A_Output_Pick` 或 `Transport_B_Output_Pick` 将主滑块送回 pick 工位，再开始下一件产品的 `Load_*_Pick`。屏幕只能使用 B2 辅助滑块的 `Load_B2_Pick(screen)` 上料，不能使用 B 主滑块的 `Load_B_Pick(screen)`。
 
 手动卸载当前 Ollama 模型：
 
@@ -184,12 +245,12 @@ sim.stopSimulation()
 |------|------|
 | 逆运动学 | 纯 Python 数值 IK（Damped Least Squares），不依赖 simIK |
 | 滑块运输 | 运动学模式，梯形速度规划（2 m/s / 20 m/s²） |
-| Agent 解析 | OpenAI 兼容接口输出结构化 JSON，未配置 API Key 时规则兜底 |
-| 任务执行 | LLM 只解析产品和数量，车辆/手机工艺路线由确定性控制器执行 |
+| Agent 规划 | LLM 输出受约束的工具调用 JSON 计划书，计划校验失败直接报错 |
+| 任务执行 | Python 执行器只接受白名单工具函数，坐标、IK、避障和句柄由工具内部封装 |
 | 双线调度 | 车辆任务进入 A 线队列、手机任务进入 B 线队列；调度器同时保持两条线各一个活动产品并按阶段轮转推进 |
 | 中间转运 | `Robot_Put_Mid` 支持将工件从一侧滑块搬运到另一侧滑块，可用 `--demo-mid-transfer` 单独展示 |
 | 摄像头质检 | 当前实现为滑块到达对应 Camera 工位后的停顿等待，不做图像识别判定 |
-| 防穿模 | 基于滑块矩形占用与关键工位 reservation 的运行前检查；主生产使用 A/B 两个执行滑块，A2/B2 作为已占用滑块纳入避障 |
+| 防穿模 | 基于滑块矩形占用与关键工位 reservation 的运行前检查；安全边距为 5mm，B2 作为手机辅助滑块参与调度 |
 
 ## 测试
 
