@@ -2,6 +2,7 @@
 
 import json
 import re
+from typing import Optional
 import urllib.error
 import urllib.request
 
@@ -12,11 +13,13 @@ class LLMError(RuntimeError):
 
 class OpenAICompatibleClient:
     def __init__(self, base_model: str, base_url: str, api_key: str,
-                 timeout: float = 30.0):
+                 timeout: float = 30.0,
+                 keep_alive: Optional[str] = None):
         self.base_model = base_model
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
+        self.keep_alive = keep_alive
 
     @property
     def is_configured(self) -> bool:
@@ -36,6 +39,8 @@ class OpenAICompatibleClient:
                 {"role": "user", "content": user_prompt},
             ],
         }
+        if self.keep_alive:
+            payload["keep_alive"] = self.keep_alive
         body = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
             f"{self.base_url}/chat/completions",
@@ -55,9 +60,70 @@ class OpenAICompatibleClient:
 
         try:
             content = data["choices"][0]["message"]["content"]
-            return self._parse_json_content(content)
+            payload = self._parse_json_content(content)
         except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
             raise LLMError(f"LLM response is not valid JSON: {data}") from exc
+        self.preload_model()
+        return payload
+
+    def preload_model(self) -> None:
+        """Refresh Ollama keep_alive through its native API."""
+        if not self.keep_alive:
+            return
+        if not self.is_configured:
+            raise LLMError("LLM is not configured; API_KEY is empty.")
+
+        payload = {
+            "model": self.base_model,
+            "prompt": "",
+            "stream": False,
+            "keep_alive": self.keep_alive,
+        }
+        self._post_native_generate(payload, "LLM preload request failed")
+
+    def unload_model(self) -> None:
+        """Unload the current Ollama model through its native API."""
+        if not self.is_configured:
+            raise LLMError("LLM is not configured; API_KEY is empty.")
+
+        payload = {
+            "model": self.base_model,
+            "prompt": "",
+            "stream": False,
+            "keep_alive": 0,
+        }
+        self._post_native_generate(payload, "LLM unload request failed")
+
+    def loaded_models(self, timeout: float = 1.0) -> list:
+        """Return models currently loaded by Ollama."""
+        request = urllib.request.Request(
+            f"{self._native_ollama_base_url()}/api/ps",
+            method="GET",
+        )
+
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            raise LLMError(f"LLM status request failed: {exc}") from exc
+
+        models = data.get("models", [])
+        if not isinstance(models, list):
+            raise LLMError(f"LLM status response is not valid: {data}")
+        return models
+
+    def is_model_loaded(self, timeout: float = 1.0) -> bool:
+        """Return True when the configured model is currently loaded."""
+        for model in self.loaded_models(timeout=timeout):
+            if not isinstance(model, dict):
+                continue
+            names = {
+                str(model.get("name", "")),
+                str(model.get("model", "")),
+            }
+            if self.base_model in names:
+                return True
+        return False
 
     def _parse_json_content(self, content: str) -> dict:
         if not isinstance(content, str):
@@ -106,3 +172,23 @@ class OpenAICompatibleClient:
                     return text[start:index + 1]
 
         raise json.JSONDecodeError("unterminated JSON object", text, start)
+
+    def _native_ollama_base_url(self) -> str:
+        if self.base_url.endswith("/v1"):
+            return self.base_url[:-3]
+        return self.base_url
+
+    def _post_native_generate(self, payload: dict, error_message: str) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self._native_ollama_base_url()}/api/generate",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as resp:
+                resp.read()
+        except (urllib.error.URLError, TimeoutError) as exc:
+            raise LLMError(f"{error_message}: {exc}") from exc

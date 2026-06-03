@@ -6,7 +6,7 @@ import json
 import re
 from typing import Any
 
-from config import API_KEY, BASE_MODEL, BASE_URL, LLM_TIMEOUT
+from config import API_KEY, BASE_MODEL, BASE_URL, LLM_KEEP_ALIVE, LLM_TIMEOUT
 from llm_client import LLMError, OpenAICompatibleClient
 
 
@@ -46,7 +46,9 @@ class ProductionAgent:
     def __init__(self, llm_client: OpenAICompatibleClient | None = None,
                  allow_rule_fallback: bool = True):
         self.llm_client = llm_client or OpenAICompatibleClient(
-            BASE_MODEL, BASE_URL, API_KEY, timeout=LLM_TIMEOUT)
+            BASE_MODEL, BASE_URL, API_KEY,
+            timeout=LLM_TIMEOUT,
+            keep_alive=LLM_KEEP_ALIVE)
         self.allow_rule_fallback = allow_rule_fallback
 
     def run(self, prompt: str) -> list[dict[str, int | str]]:

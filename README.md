@@ -11,22 +11,23 @@
 pip install coppeliasim-zmqremoteapi-client numpy
 ```
 
-默认使用本地 Ollama 模型解析自然语言，不调用云端 API。请先确认本机已安装并启动 Ollama，且已拉取课程使用的模型：
+默认使用本地 Ollama 模型解析自然语言，不调用云端 API。请先确认本机已安装并启动 Ollama，且已拉取当前使用的模型：
 
 ```bash
-ollama pull deepseek-r1:7b
+ollama pull qwen3.6
 ```
 
 默认配置位于 `config.py`：
 
 ```bash
-set BASE_MODEL=deepseek-r1:7b
+set BASE_MODEL=qwen3.6:latest
 set BASE_URL=http://localhost:11434/v1
 set API_KEY=ollama
 set LLM_TIMEOUT=180
+set LLM_KEEP_ALIVE=-1
 ```
 
-其中 `API_KEY=ollama` 只是为了兼容 OpenAI-style 客户端，本地 Ollama 服务不会校验该值。环境变量仍可覆盖这些默认值。模型不可用或输出无法校验时，程序会使用本地规则解析作为演示兜底，支持“生产一辆车”“生产两部手机”等常见表达。
+其中 `API_KEY=ollama` 只是为了兼容 OpenAI-style 客户端，本地 Ollama 服务不会校验该值。`LLM_KEEP_ALIVE=-1` 表示普通调试运行后通过 Ollama 原生 `/api/generate` 空请求刷新模型常驻状态，避免每次运行都重新加载；需要释放显存/内存时再手动执行卸载命令。环境变量仍可覆盖这些默认值。模型不可用或输出无法校验时，程序会使用本地规则解析作为演示兜底，支持“生产一辆车”“生产两部手机”等常见表达。
 
 ## 文件说明
 
@@ -69,6 +70,14 @@ python main.py "生产两部手机"
 python main.py "连续生产一辆车和两部手机"
 ```
 
+程序完成首条任务后不会自动退出，而是进入会话模式继续等待输入。后续每输入一条新的生产指令，程序会先重新加载 `assembly_line.ttt` 复位 CoppeliaSim 场景，再解析并执行新任务。输入 `exit`、`quit` 或 `q` 退出会话。
+
+也可以不带初始任务，直接启动仿真会话：
+
+```bash
+python main.py
+```
+
 包含车辆和手机的混合任务会进入双产线调度：车辆进入 A 线队列，手机进入 B 线队列，两条线各保持一个活动产品并轮转推进。
 
 只演示 `Robot_Put_Mid` 跨产线转运：
@@ -81,6 +90,12 @@ python main.py --demo-mid-transfer
 
 ```bash
 python main.py --parse-only "连续生产一辆车和两部手机"
+```
+
+手动卸载当前 Ollama 模型：
+
+```bash
+python main.py --unload-model
 ```
 
 如果已经手动打开 CoppeliaSim：
