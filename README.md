@@ -68,6 +68,9 @@ Project/
 python main.py "生产一辆车"
 python main.py "生产两部手机"
 python main.py "连续生产一辆车和两部手机"
+python main.py "把手机产线中的某个零件移到output中"
+python main.py "把手机产线中的屏幕移到output中"
+python main.py "把汽车产线中的车架送到输出区"
 ```
 
 程序完成首条任务后不会自动退出，而是进入会话模式继续等待输入。后续每输入一条新的生产指令，程序会先让 LLM 输出工具调用计划书，再重新加载 `assembly_line.ttt` 复位 CoppeliaSim 场景并执行计划。输入 `exit`、`quit` 或 `q` 退出会话。
@@ -114,6 +117,8 @@ python main.py --parse-only "连续生产一辆车和两部手机"
   ]
 }
 ```
+
+对常见的单步操作型指令，Agent 会先走确定性解析再调用模型。例如“把手机产线中的某个零件移到 output 中”会默认选择手机机身 `phone_base`，生成 `Load_B_Pick(phone_base) -> ... -> Unload_B_Output(phone_base)`；如果明确说“屏幕”，则会使用 B2 辅助滑块装载屏幕后转移到 B 主滑块再送往 output。
 
 允许的工具函数：
 

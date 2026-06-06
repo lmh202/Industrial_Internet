@@ -81,6 +81,12 @@ class FakeLLMClient:
         return self.payloads[index]
 
 
+class DisabledLLMClient:
+    @property
+    def is_configured(self):
+        return False
+
+
 class PlannerTests(unittest.TestCase):
     def test_validates_car_plan(self):
         self.assertEqual(validate_plan(CAR_PLAN)["plan_name"], "one_car")
@@ -92,6 +98,42 @@ class PlannerTests(unittest.TestCase):
         agent = ProductionAgent(llm_client=FakeLLMClient(CAR_PLAN))
         plan = agent.run("生产一辆车")
         self.assertEqual(plan["steps"][0]["tool"], "Load_A_Pick")
+
+    def test_rule_plans_unspecified_phone_part_to_output(self):
+        agent = ProductionAgent(llm_client=DisabledLLMClient())
+        plan = agent.run("把手机产线中的某个零件移到output中")
+        tools = [step["tool"] for step in plan["steps"]]
+
+        self.assertEqual(plan["plan_name"], "move_b_phone_base_to_output")
+        self.assertEqual(tools, [
+            "Load_B_Pick",
+            "Transport_B_Pick_Assemble",
+            "Transport_B_Assemble_Camera",
+            "Transport_B_Camera_Output",
+            "Unload_B_Output",
+        ])
+        self.assertEqual(plan["steps"][0]["args"]["part"], "phone_base")
+
+    def test_rule_plans_phone_screen_to_output_with_aux_shuttle(self):
+        agent = ProductionAgent(llm_client=DisabledLLMClient())
+        plan = agent.run("把手机产线中的屏幕移到output中")
+        tools = [step["tool"] for step in plan["steps"]]
+
+        self.assertEqual(plan["plan_name"], "move_b_screen_to_output")
+        self.assertIn("Load_B2_Pick", tools)
+        self.assertIn("Hold_B2_Assemble", tools)
+        self.assertEqual(plan["steps"][-1],
+                         {"tool": "Unload_B_Output", "args": {"part": "screen"}})
+
+    def test_rule_plans_car_frame_to_output(self):
+        agent = ProductionAgent(llm_client=DisabledLLMClient())
+        plan = agent.run("把汽车产线中的车架送到输出区")
+
+        self.assertEqual(plan["plan_name"], "move_a_car_frame_to_output")
+        self.assertEqual(plan["steps"][0],
+                         {"tool": "Load_A_Pick", "args": {"part": "car_frame"}})
+        self.assertEqual(plan["steps"][-1],
+                         {"tool": "Unload_A_Output", "args": {"part": "car_frame"}})
 
     def test_agent_retries_invalid_sequence_plan(self):
         bad_plan = {

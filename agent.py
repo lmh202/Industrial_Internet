@@ -69,6 +69,31 @@ PLAN_TRANSPORT_ROUTES = {
     "Transport_B2_Assemble_Clear": ("B2", "assemble", "clear"),
 }
 
+LINE_PARTS = {
+    "A": {"car_base", "car_frame"},
+    "B": {"phone_base", "screen", "camera_module"},
+}
+
+DEFAULT_LINE_PART = {
+    "A": "car_base",
+    "B": "phone_base",
+}
+
+PART_ALIASES = {
+    "car_base": ("car_base", "part_car_base", "底盘", "车底", "车辆底座", "汽车底座"),
+    "car_frame": ("car_frame", "part_car_frame", "车架", "车身", "框架"),
+    "phone_base": ("phone_base", "part_phone", "手机机身", "手机底座", "机身"),
+    "screen": ("screen", "part_screen", "屏幕", "手机屏幕"),
+    "camera_module": (
+        "camera_module",
+        "part_camera_module",
+        "摄像头模组",
+        "摄像头",
+        "相机模组",
+        "相机",
+    ),
+}
+
 
 SYSTEM_PROMPT = """
 Return one JSON object only: {"plan_name":"...","steps":[{"tool":"...","args":{}}]}.
@@ -117,6 +142,22 @@ Transport_B_Clear_Assemble,
 Place_B_Assemble(screen, attach_to=phone_base, layer=2),
 Transport_B_Assemble_Camera, Inspect_B, Transport_B_Camera_Output,
 Unload_B_Output(phone_base).
+
+Move one phone-line part to output:
+- phone_base or camera_module:
+Load_B_Pick(part), Transport_B_Pick_Assemble, Transport_B_Assemble_Camera,
+Transport_B_Camera_Output, Unload_B_Output(part).
+- screen:
+Transport_B_Pick_Assemble, Transport_B2_Clear_Pick, Load_B2_Pick(screen),
+Transport_B2_Pick_Assemble, Hold_B2_Assemble(screen),
+Transport_B2_Assemble_Clear, Place_B_Assemble(screen, layer=0),
+Transport_B_Assemble_Camera, Transport_B_Camera_Output, Unload_B_Output(screen).
+If the user says an unspecified phone-line part, use phone_base.
+
+Move one car-line part to output:
+Load_A_Pick(part), Transport_A_Pick_Assemble, Transport_A_Assemble_Camera,
+Transport_A_Camera_Output, Unload_A_Output(part).
+If the user says an unspecified car-line part, use car_base.
 """
 
 
@@ -141,6 +182,13 @@ class ProductionPlanner:
         """Plan user text into a validated tool-call JSON object."""
         if not prompt.strip():
             raise PlanValidationError("Prompt is empty.")
+
+        rule_plan = rule_plan_from_prompt(prompt)
+        if rule_plan is not None:
+            plan = validate_plan(rule_plan)
+            validate_plan_sequence(plan)
+            return plan
+
         if not self.llm_client.is_configured:
             raise PlanValidationError("LLM is not configured.")
 
@@ -168,6 +216,105 @@ class ProductionPlanner:
 
 
 ProductionAgent = ProductionPlanner
+
+
+def rule_plan_from_prompt(prompt: str) -> dict[str, Any] | None:
+    text = _normalize_prompt(prompt)
+    if not _looks_like_move_to_output(text):
+        return None
+
+    line = _detect_line(text)
+    part = _detect_part(text)
+    if line is None and part is not None:
+        line = _line_for_part(part)
+    if line is None:
+        return None
+    if part is None:
+        part = DEFAULT_LINE_PART[line]
+    if part not in LINE_PARTS[line]:
+        return None
+    return _move_part_to_output_plan(line, part)
+
+
+def _normalize_prompt(prompt: str) -> str:
+    return (
+        prompt.strip()
+        .lower()
+        .replace(" ", "")
+        .replace("，", ",")
+        .replace("。", ".")
+    )
+
+
+def _looks_like_move_to_output(text: str) -> bool:
+    has_move = any(word in text for word in (
+        "移动", "移到", "移至", "搬到", "搬运", "送到", "送至", "放到", "放入", "运到"
+    ))
+    has_output = any(word in text for word in (
+        "output", "输出", "出料", "输出区", "出料区", "成品区"
+    ))
+    has_part_context = any(word in text for word in (
+        "零件", "部件", "part", "底盘", "车架", "车身", "屏幕", "摄像头", "机身"
+    ))
+    return has_move and has_output and has_part_context
+
+
+def _detect_line(text: str) -> str | None:
+    if any(word in text for word in ("手机产线", "手机线", "b线", "b产线", "phone_line")):
+        return "B"
+    if any(word in text for word in ("车辆产线", "汽车产线", "车产线", "a线", "a产线", "car_line")):
+        return "A"
+    return None
+
+
+def _detect_part(text: str) -> str | None:
+    for part, aliases in PART_ALIASES.items():
+        if any(alias in text for alias in aliases):
+            return part
+    return None
+
+
+def _line_for_part(part: str) -> str:
+    for line, parts in LINE_PARTS.items():
+        if part in parts:
+            return line
+    raise PlanValidationError(f"Unsupported part: {part}")
+
+
+def _move_part_to_output_plan(line: str, part: str) -> dict[str, Any]:
+    if line == "A":
+        steps = [
+            {"tool": "Load_A_Pick", "args": {"part": part}},
+            {"tool": "Transport_A_Pick_Assemble", "args": {}},
+            {"tool": "Transport_A_Assemble_Camera", "args": {}},
+            {"tool": "Transport_A_Camera_Output", "args": {}},
+            {"tool": "Unload_A_Output", "args": {"part": part}},
+        ]
+    elif part == "screen":
+        steps = [
+            {"tool": "Transport_B_Pick_Assemble", "args": {}},
+            {"tool": "Transport_B2_Clear_Pick", "args": {}},
+            {"tool": "Load_B2_Pick", "args": {"part": "screen"}},
+            {"tool": "Transport_B2_Pick_Assemble", "args": {}},
+            {"tool": "Hold_B2_Assemble", "args": {"part": "screen"}},
+            {"tool": "Transport_B2_Assemble_Clear", "args": {}},
+            {"tool": "Place_B_Assemble", "args": {"part": "screen", "layer": 0}},
+            {"tool": "Transport_B_Assemble_Camera", "args": {}},
+            {"tool": "Transport_B_Camera_Output", "args": {}},
+            {"tool": "Unload_B_Output", "args": {"part": "screen"}},
+        ]
+    else:
+        steps = [
+            {"tool": "Load_B_Pick", "args": {"part": part}},
+            {"tool": "Transport_B_Pick_Assemble", "args": {}},
+            {"tool": "Transport_B_Assemble_Camera", "args": {}},
+            {"tool": "Transport_B_Camera_Output", "args": {}},
+            {"tool": "Unload_B_Output", "args": {"part": part}},
+        ]
+    return {
+        "plan_name": f"move_{line.lower()}_{part}_to_output",
+        "steps": steps,
+    }
 
 
 def validate_plan(payload: dict[str, Any]) -> dict[str, Any]:
