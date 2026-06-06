@@ -1,6 +1,8 @@
 """Deterministic CoppeliaSim factory workflow controller."""
 
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import math
 import time
 
 from collision_manager import CollisionManager
@@ -19,6 +21,7 @@ from scene_config import (
     SEGMENT_HEIGHT,
     SHUTTLE_SAFE_MARGIN,
     SHUTTLE_SIZE_X,
+    SHUTTLE_SIZE_Y,
     Y_ASSEM,
     Y_CAMERA,
     Y_POLISH,
@@ -45,6 +48,7 @@ STATION_Y = {
 }
 
 B_CLEAR_OFFSET_X = SHUTTLE_SIZE_X + 2 * SHUTTLE_SAFE_MARGIN
+ASSEMBLE_FOLLOW_GAP_Y = SHUTTLE_SIZE_Y + 2 * SHUTTLE_SAFE_MARGIN
 
 
 class FactoryController:
@@ -99,6 +103,7 @@ class FactoryController:
 
         for name, aliases in {
             "line_a": ["Shuttle_A1", "Shuttle_A0", "Shuttle_A"],
+            "line_a_aux": ["Shuttle_A2"],
             "line_b": ["Shuttle_B1", "Shuttle_B0", "Shuttle_B"],
             "line_b_aux": ["Shuttle_B2"],
         }.items():
@@ -108,14 +113,6 @@ class FactoryController:
             self.shuttles[name] = ShuttleController(
                 self.sim, handle, name=name, dt=self.dt,
                 render_delay=self.render_delay)
-
-        for name, aliases in {
-            "static_a2": ["Shuttle_A2"],
-        }.items():
-            try:
-                self.obstacle_handles[name] = self._object(aliases)
-            except SceneObjectError:
-                pass
 
         self.part_templates = {
             "car_base": self._object(["Part_Car_Base", "Part_Bottom_A0"]),
@@ -149,7 +146,76 @@ class FactoryController:
         steps = plan.get("steps", [])
         results = []
         print(f"[Planner] execute plan: {plan.get('plan_name', '<unnamed>')}")
-        for index, step in enumerate(steps, start=1):
+        index = 1
+        while index <= len(steps):
+            step = steps[index - 1]
+            next_step = steps[index] if index < len(steps) else None
+            if next_step is not None and self._can_parallel_tool_pair(step, next_step):
+                print(f"[Tool] {index:02d}-{index + 1:02d}. parallel tools")
+                try:
+                    self._execute_parallel_pair(step, next_step)
+                except ProductionStepError as exc:
+                    if "Parallel shuttle transport" not in str(exc):
+                        for failed_index, failed_step in (
+                            (index, step),
+                            (index + 1, next_step),
+                        ):
+                            results.append(ToolResult(
+                                index=failed_index,
+                                tool=failed_step["tool"],
+                                args=failed_step.get("args", {}),
+                                ok=False,
+                                message=str(exc),
+                            ))
+                        print(f"[Tool] {index:02d}-{index + 1:02d}. failed: {exc}")
+                        return ExecutionReport(
+                            plan_name=plan.get("plan_name", "<unnamed>"),
+                            ok=False,
+                            steps=results,
+                        ).to_dict()
+
+                    print(
+                        f"[Tool] {index:02d}-{index + 1:02d}. "
+                        f"parallel unsafe, fallback to serial: {exc}")
+                    for serial_index, serial_step in ((index, step), (index + 1, next_step)):
+                        tool = serial_step["tool"]
+                        args = serial_step.get("args", {})
+                        try:
+                            message = self._execute_tool(tool, args) or "completed"
+                        except Exception as serial_exc:
+                            results.append(ToolResult(
+                                index=serial_index,
+                                tool=tool,
+                                args=args,
+                                ok=False,
+                                message=str(serial_exc),
+                            ))
+                            print(f"[Tool] {serial_index:02d}. failed: {serial_exc}")
+                            return ExecutionReport(
+                                plan_name=plan.get("plan_name", "<unnamed>"),
+                                ok=False,
+                                steps=results,
+                            ).to_dict()
+                        results.append(ToolResult(
+                            index=serial_index,
+                            tool=tool,
+                            args=args,
+                            ok=True,
+                            message=f"{message} (serial fallback)",
+                        ))
+                    index += 2
+                    continue
+                for done_index, done_step in ((index, step), (index + 1, next_step)):
+                    results.append(ToolResult(
+                        index=done_index,
+                        tool=done_step["tool"],
+                        args=done_step.get("args", {}),
+                        ok=True,
+                        message="completed in parallel",
+                    ))
+                index += 2
+                continue
+
             tool = step["tool"]
             args = step.get("args", {})
             print(f"[Tool] {index:02d}. {tool} {args}")
@@ -176,6 +242,7 @@ class FactoryController:
                 ok=True,
                 message=message,
             ))
+            index += 1
         return ExecutionReport(
             plan_name=plan.get("plan_name", "<unnamed>"),
             ok=True,
@@ -184,8 +251,8 @@ class FactoryController:
 
     def _init_tool_state(self):
         self.tool_state = {
-            "station": {"A": "pick", "B": "pick", "B2": "clear"},
-            "parts": {"A": {}, "B": {}, "B2": {}},
+            "station": {"A": "pick", "A2": "clear", "B": "pick", "B2": "clear"},
+            "parts": {"A": {}, "A2": {}, "B": {}, "B2": {}},
             "holding": {"A": None, "B": None, "mid": None},
         }
 
@@ -203,6 +270,64 @@ class FactoryController:
     def _execute_transport_tool(self, spec, _args: dict):
         line, source, target = spec.route
         self._tool_transport(line, source, target)
+
+    def _can_parallel_tool_pair(self, first: dict, second: dict) -> bool:
+        first_spec = TOOL_REGISTRY.get(first.get("tool"))
+        second_spec = TOOL_REGISTRY.get(second.get("tool"))
+        if first_spec is None or second_spec is None:
+            return False
+        if "cross_line" in {first_spec.category, second_spec.category}:
+            return False
+        first_family = self._tool_family(first_spec)
+        second_family = self._tool_family(second_spec)
+        if first_family is None or second_family is None:
+            return False
+        if first_family == second_family:
+            return self._can_parallel_same_family_pair(first_spec, second_spec)
+        return True
+
+    def _can_parallel_same_family_pair(self, first_spec, second_spec) -> bool:
+        if first_spec.category != "transport" or second_spec.category != "transport":
+            return False
+        pair = frozenset({first_spec.name, second_spec.name})
+        return pair in {
+            frozenset({
+                "Transport_A2_Assemble_Clear",
+                "Transport_A_Forward_Assemble",
+            }),
+            frozenset({
+                "Transport_B2_Assemble_Clear",
+                "Transport_B_Forward_Assemble",
+            }),
+        }
+
+    def _execute_parallel_pair(self, first: dict, second: dict):
+        first_spec = TOOL_REGISTRY[first["tool"]]
+        second_spec = TOOL_REGISTRY[second["tool"]]
+        if first_spec.category == "transport" and second_spec.category == "transport":
+            self._execute_transport_pair(first, second)
+            return
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(self._execute_tool, first["tool"], first.get("args", {})),
+                executor.submit(self._execute_tool, second["tool"], second.get("args", {})),
+            ]
+            for future in as_completed(futures):
+                future.result()
+
+    def _execute_transport_pair(self, first: dict, second: dict):
+        specs = [TOOL_REGISTRY[first["tool"]], TOOL_REGISTRY[second["tool"]]]
+        moves = []
+        for spec in specs:
+            line, source, target = spec.route
+            self._require_station(line, source)
+            owner = self._line_owner(line)
+            x, y = self._station_position(line, target)
+            moves.append((line, source, target, owner, self.shuttles[owner], x, y))
+        self._move_shuttles_parallel(moves)
+        for line, _source, target, _owner, _shuttle, _x, _y in moves:
+            self.tool_state["station"][line] = target
 
     def _execute_load_tool(self, spec, args: dict):
         self._tool_load(spec.line, args)
@@ -340,16 +465,38 @@ class FactoryController:
     def _line_owner(self, line: str) -> str:
         if line == "A":
             return "line_a"
+        if line == "A2":
+            return "line_a_aux"
         if line == "B":
             return "line_b"
         if line == "B2":
             return "line_b_aux"
         raise ProductionStepError(f"Unknown line: {line}")
 
+    @staticmethod
+    def _line_family(line: str) -> str:
+        return "A" if line.startswith("A") else "B"
+
+    def _tool_family(self, spec):
+        if spec.category == "transport" and spec.route is not None:
+            return self._line_family(spec.route[0])
+        if spec.category in {"load", "place", "inspect", "unload"} and spec.line:
+            return self._line_family(spec.line)
+        if spec.category == "hold" and spec.arm_line:
+            return self._line_family(spec.arm_line)
+        return None
+
     def _line_center_x(self, line: str) -> float:
-        return LINE_A_CENTER_X if line == "A" else LINE_B_CENTER_X
+        return LINE_A_CENTER_X if line in {"A", "A2"} else LINE_B_CENTER_X
 
     def _station_position(self, line: str, station: str):
+        if line == "A" and station == "forward":
+            return LINE_A_CENTER_X, Y_ASSEM - ASSEMBLE_FOLLOW_GAP_Y
+        if line == "A2" and station == "clear":
+            pos = self.shuttle_initial_positions["line_a_aux"]
+            return pos[0], pos[1]
+        if line == "B" and station == "forward":
+            return LINE_B_CENTER_X, Y_ASSEM - ASSEMBLE_FOLLOW_GAP_Y
         if line == "B" and station == "clear":
             return LINE_B_CENTER_X - B_CLEAR_OFFSET_X, Y_ASSEM
         if line == "B2" and station == "clear":
@@ -358,7 +505,7 @@ class FactoryController:
         return self._line_center_x(line), STATION_Y[station]
 
     def _put_arm(self, line: str):
-        return self.arms["put_a" if line == "A" else "put_b"]
+        return self.arms["put_a" if line in {"A", "A2"} else "put_b"]
 
     def _assemble_arm(self, line: str):
         return self.arms["assemble_car" if line == "A" else "assemble_phone"]
@@ -593,6 +740,76 @@ class FactoryController:
         with self.collision.reserve(owner, key, x, y):
             for wx, wy in self._avoidance_path(owner, shuttle, x, y):
                 shuttle.move_to(wx, wy, DEFAULT_SHUTTLE_SPEED)
+
+    def _move_shuttles_parallel(self, moves: list[tuple]):
+        plans = []
+        for _line, source, target, owner, shuttle, target_x, target_y in moves:
+            pose = shuttle.get_pose()
+            start_x, start_y, z = pose["x"], pose["y"], pose["z"]
+            dx = target_x - start_x
+            dy = target_y - start_y
+            distance = math.sqrt(dx * dx + dy * dy)
+            if distance < 1e-6:
+                continue
+            speeds = shuttle._trapezoidal_profile(distance, DEFAULT_SHUTTLE_SPEED,
+                                                  shuttle.max_accel)
+            plans.append({
+                "key": f"{owner}_{source}_{target}_parallel",
+                "owner": owner,
+                "shuttle": shuttle,
+                "start_x": start_x,
+                "start_y": start_y,
+                "target_x": target_x,
+                "target_y": target_y,
+                "z": z,
+                "ux": dx / distance,
+                "uy": dy / distance,
+                "distance": distance,
+                "speeds": speeds,
+                "traveled": 0.0,
+            })
+        if not plans:
+            return
+
+        max_steps = max(len(plan["speeds"]) for plan in plans)
+        for step_index in range(max_steps):
+            candidates = []
+            for plan in plans:
+                if step_index >= len(plan["speeds"]):
+                    candidates.append((plan, plan["target_x"], plan["target_y"]))
+                    continue
+                ds = plan["speeds"][step_index] * self.dt
+                plan["traveled"] = min(plan["distance"], plan["traveled"] + ds)
+                x = plan["start_x"] + plan["ux"] * plan["traveled"]
+                y = plan["start_y"] + plan["uy"] * plan["traveled"]
+                candidates.append((plan, x, y))
+            self._require_parallel_candidates_safe(candidates)
+            for plan, x, y in candidates:
+                plan["shuttle"]._set_pose(x, y, plan["z"])
+            self.sim.step()
+            if self.render_delay > 0:
+                time.sleep(self.render_delay)
+
+        final_candidates = [
+            (plan, plan["target_x"], plan["target_y"])
+            for plan in plans
+        ]
+        self._require_parallel_candidates_safe(final_candidates)
+        for plan, x, y in final_candidates:
+            plan["shuttle"]._set_pose(x, y, plan["z"])
+        self.sim.step()
+        if self.render_delay > 0:
+            time.sleep(self.render_delay)
+
+    def _require_parallel_candidates_safe(self, candidates: list[tuple]) -> None:
+        half_x = SHUTTLE_SIZE_X / 2 + SHUTTLE_SAFE_MARGIN
+        half_y = SHUTTLE_SIZE_Y / 2 + SHUTTLE_SAFE_MARGIN
+        for left_index, (_left_plan, left_x, left_y) in enumerate(candidates):
+            for _right_plan, right_x, right_y in candidates[left_index + 1:]:
+                if abs(left_x - right_x) < 2 * half_x and abs(left_y - right_y) < 2 * half_y:
+                    raise ProductionStepError(
+                        "Parallel shuttle transport would violate safe spacing."
+                    )
 
     def _avoidance_path(self, owner: str, shuttle, target_x: float, target_y: float):
         pose = shuttle.get_pose()

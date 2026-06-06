@@ -10,7 +10,13 @@ from agent import (
 )
 from collision_manager import CollisionManager
 from factory_controller import FactoryController, ProductionStepError
-from scene_config import LINE_B_CENTER_X, SHUTTLE_SAFE_MARGIN, SHUTTLE_SIZE_X, Y_ASSEM
+from scene_config import (
+    LINE_B_CENTER_X,
+    SHUTTLE_SAFE_MARGIN,
+    SHUTTLE_SIZE_X,
+    SHUTTLE_SIZE_Y,
+    Y_ASSEM,
+)
 from tool_registry import TOOL_REGISTRY, build_tool_prompt
 import main
 
@@ -18,12 +24,15 @@ import main
 CAR_PLAN = {
     "plan_name": "one_car",
     "steps": [
-        {"tool": "Load_A_Pick", "args": {"part": "car_frame"}},
-        {"tool": "Transport_A_Pick_Assemble", "args": {}},
-        {"tool": "Hold_A_Assemble", "args": {"part": "car_frame"}},
-        {"tool": "Transport_A_Assemble_Pick", "args": {}},
         {"tool": "Load_A_Pick", "args": {"part": "car_base"}},
         {"tool": "Transport_A_Pick_Assemble", "args": {}},
+        {"tool": "Transport_A_Assemble_Forward", "args": {}},
+        {"tool": "Transport_A2_Clear_Pick", "args": {}},
+        {"tool": "Load_A2_Pick", "args": {"part": "car_frame"}},
+        {"tool": "Transport_A2_Pick_Assemble", "args": {}},
+        {"tool": "Hold_A2_Assemble", "args": {"part": "car_frame"}},
+        {"tool": "Transport_A2_Assemble_Clear", "args": {}},
+        {"tool": "Transport_A_Forward_Assemble", "args": {}},
         {
             "tool": "Place_A_Assemble",
             "args": {"part": "car_frame", "attach_to": "car_base", "layer": 1},
@@ -38,26 +47,29 @@ CAR_PLAN = {
 PHONE_PLAN = {
     "plan_name": "one_phone",
     "steps": [
-        {"tool": "Load_B_Pick", "args": {"part": "camera_module"}},
-        {"tool": "Transport_B_Pick_Assemble", "args": {}},
-        {"tool": "Hold_B_Assemble", "args": {"part": "camera_module"}},
-        {"tool": "Transport_B_Assemble_Pick", "args": {}},
         {"tool": "Load_B_Pick", "args": {"part": "phone_base"}},
         {"tool": "Transport_B_Pick_Assemble", "args": {}},
-        {
-            "tool": "Place_B_Assemble",
-            "args": {"part": "camera_module", "attach_to": "phone_base"},
-        },
-        {"tool": "Transport_B_Assemble_Clear", "args": {}},
+        {"tool": "Transport_B_Assemble_Forward", "args": {}},
         {"tool": "Transport_B2_Clear_Pick", "args": {}},
         {"tool": "Load_B2_Pick", "args": {"part": "screen"}},
         {"tool": "Transport_B2_Pick_Assemble", "args": {}},
         {"tool": "Hold_B2_Assemble", "args": {"part": "screen"}},
         {"tool": "Transport_B2_Assemble_Clear", "args": {}},
-        {"tool": "Transport_B_Clear_Assemble", "args": {}},
+        {"tool": "Transport_B_Forward_Assemble", "args": {}},
         {
             "tool": "Place_B_Assemble",
-            "args": {"part": "screen", "attach_to": "phone_base", "layer": 2},
+            "args": {"part": "screen", "attach_to": "phone_base", "layer": 1},
+        },
+        {"tool": "Transport_B_Assemble_Forward", "args": {}},
+        {"tool": "Transport_B2_Clear_Pick", "args": {}},
+        {"tool": "Load_B2_Pick", "args": {"part": "camera_module"}},
+        {"tool": "Transport_B2_Pick_Assemble", "args": {}},
+        {"tool": "Hold_B2_Assemble", "args": {"part": "camera_module"}},
+        {"tool": "Transport_B2_Assemble_Clear", "args": {}},
+        {"tool": "Transport_B_Forward_Assemble", "args": {}},
+        {
+            "tool": "Place_B_Assemble",
+            "args": {"part": "camera_module", "attach_to": "phone_base", "layer": 2},
         },
         {"tool": "Transport_B_Assemble_Camera", "args": {}},
         {"tool": "Inspect_B", "args": {}},
@@ -160,6 +172,20 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(tools.count("Unload_B_Output"), 2)
         first_phone_unload = tools.index("Unload_B_Output")
         self.assertEqual(tools[first_phone_unload + 1], "Transport_B_Output_Pick")
+
+    def test_rule_interleaves_simultaneous_car_and_phone_start(self):
+        agent = ProductionAgent(llm_client=DisabledLLMClient())
+        plan = agent.run(
+            "\u540c\u65f6\u542f\u52a8\u751f\u4ea7\u4e00\u90e8"
+            "\u624b\u673a\u548c\u4e00\u8f86\u6c7d\u8f66"
+        )
+        tools = [step["tool"] for step in plan["steps"]]
+
+        self.assertEqual(plan["plan_name"], "parallel_start_1_car_1_phone")
+        self.assertIn("Load_A_Pick", tools[:4])
+        self.assertIn("Load_B_Pick", tools[:4])
+        self.assertLess(tools.index("Load_A_Pick"), tools.index("Unload_B_Output"))
+        self.assertLess(tools.index("Load_B_Pick"), tools.index("Unload_A_Output"))
 
     def test_agent_retries_invalid_sequence_plan(self):
         bad_plan = {
@@ -363,6 +389,73 @@ class ToolExecutorStateTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual(report["steps"][-1]["message"], "blocked path")
 
+    def test_execute_tool_plan_batches_parallel_transport_pair(self):
+        controller = FactoryController.__new__(FactoryController)
+        pairs = []
+        singles = []
+        controller._execute_transport_pair = lambda first, second: pairs.append(
+            (first["tool"], second["tool"]))
+        controller._execute_tool = lambda tool, args: singles.append((tool, args))
+        report = controller.execute_tool_plan({
+            "plan_name": "parallel_pair",
+            "steps": [
+                {"tool": "Transport_B2_Assemble_Clear", "args": {}},
+                {"tool": "Transport_B_Forward_Assemble", "args": {}},
+            ],
+        })
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(pairs, [(
+            "Transport_B2_Assemble_Clear",
+            "Transport_B_Forward_Assemble",
+        )])
+        self.assertEqual(singles, [])
+        self.assertEqual(report["steps"][0]["message"], "completed in parallel")
+
+    def test_execute_tool_plan_batches_independent_arm_tools(self):
+        controller = FactoryController.__new__(FactoryController)
+        calls = []
+        controller._execute_tool = lambda tool, args: calls.append((tool, args))
+        report = controller.execute_tool_plan({
+            "plan_name": "parallel_arms",
+            "steps": [
+                {"tool": "Hold_A2_Assemble", "args": {"part": "car_frame"}},
+                {"tool": "Hold_B2_Assemble", "args": {"part": "screen"}},
+            ],
+        })
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(set(tool for tool, _args in calls), {
+            "Hold_A2_Assemble",
+            "Hold_B2_Assemble",
+        })
+        self.assertEqual(report["steps"][0]["message"], "completed in parallel")
+
+    def test_parallel_transport_spacing_failure_falls_back_to_serial(self):
+        controller = FactoryController.__new__(FactoryController)
+        singles = []
+
+        def fail_parallel(_first, _second):
+            raise ProductionStepError(
+                "Parallel shuttle transport would violate safe spacing.")
+
+        controller._execute_transport_pair = fail_parallel
+        controller._execute_tool = lambda tool, args: singles.append((tool, args))
+        report = controller.execute_tool_plan({
+            "plan_name": "parallel_fallback",
+            "steps": [
+                {"tool": "Transport_B2_Assemble_Clear", "args": {}},
+                {"tool": "Transport_B_Forward_Assemble", "args": {}},
+            ],
+        })
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(singles, [
+            ("Transport_B2_Assemble_Clear", {}),
+            ("Transport_B_Forward_Assemble", {}),
+        ])
+        self.assertIn("serial fallback", report["steps"][0]["message"])
+
     def test_hold_updates_assemble_state(self):
         controller = FactoryController.__new__(FactoryController)
         controller._init_tool_state()
@@ -446,6 +539,20 @@ class ToolExecutorStateTests(unittest.TestCase):
         self.assertAlmostEqual(y, Y_ASSEM)
         self.assertAlmostEqual(LINE_B_CENTER_X - x,
                                SHUTTLE_SIZE_X + 2 * SHUTTLE_SAFE_MARGIN)
+
+    def test_forward_and_aux_assemble_positions_follow_on_same_line(self):
+        controller = FactoryController.__new__(FactoryController)
+        main_x, main_y = controller._station_position("B", "forward")
+        aux_x, aux_y = controller._station_position("B2", "assemble")
+
+        self.assertAlmostEqual(main_x, LINE_B_CENTER_X)
+        self.assertAlmostEqual(aux_x, LINE_B_CENTER_X)
+        self.assertLess(main_y, Y_ASSEM)
+        self.assertAlmostEqual(aux_y, Y_ASSEM)
+        self.assertAlmostEqual(
+            aux_y - main_y,
+            SHUTTLE_SIZE_Y + 2 * SHUTTLE_SAFE_MARGIN,
+        )
 
     def test_output_to_pick_transport_updates_station(self):
         controller = FactoryController.__new__(FactoryController)

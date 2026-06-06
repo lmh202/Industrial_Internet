@@ -24,11 +24,13 @@ class PlanStateError(ValueError):
 class PlanState:
     station: dict[str, str] = field(default_factory=lambda: {
         "A": "pick",
+        "A2": "clear",
         "B": "pick",
         "B2": "clear",
     })
     parts: dict[str, set[str]] = field(default_factory=lambda: {
         "A": set(),
+        "A2": set(),
         "B": set(),
         "B2": set(),
     })
@@ -130,6 +132,8 @@ class PlanState:
 def _line_from_load_tool(tool: str) -> str:
     if tool == "Load_A_Pick":
         return "A"
+    if tool == "Load_A2_Pick":
+        return "A2"
     if tool == "Load_B_Pick":
         return "B"
     return "B2"
@@ -138,6 +142,8 @@ def _line_from_load_tool(tool: str) -> str:
 def _hold_source_and_arm(tool: str) -> tuple[str, str]:
     if tool == "Hold_A_Assemble":
         return "A", "A"
+    if tool == "Hold_A2_Assemble":
+        return "A2", "A"
     if tool == "Hold_B_Assemble":
         return "B", "B"
     return "B2", "B"

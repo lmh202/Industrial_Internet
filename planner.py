@@ -22,32 +22,51 @@ Parts only: car_base, car_frame, phone_base, screen, camera_module.
 
 Screen loading rule: screen must always be loaded with Load_B2_Pick after
 Transport_B2_Clear_Pick. Never use Load_B_Pick(screen).
+Auxiliary shuttle rule: do not use the assemble arm as a long-term buffer.
+Forward means moving the main shuttle a short distance forward along the
+conveyor, not sideways toward the robot base. The auxiliary shuttle then
+follows behind to the normal assemble station, so the assemble arm picks from
+the original assemble position.
+For car assembly, put car_base on A first, move A forward along the conveyor,
+use A2 to bring car_frame to the assemble station, hold car_frame briefly,
+return A2 to clear, move A back to assemble, then place car_frame on car_base.
+For phone assembly, put phone_base on B first. Use B2 to bring screen, place it
+on phone_base, then move B forward along the conveyor. Use B2 to bring
+camera_module to the assemble station, hold it briefly, return B2 to clear, move B back to
+assemble, then place camera_module.
 Every repeated product must begin with its main shuttle at pick. If another
 product on the same line follows an Unload_*_Output step, insert exactly one
 Transport_A_Output_Pick or Transport_B_Output_Pick before the next Load_*_Pick.
+If the user asks to start car and phone production simultaneously, interleave
+independent A-line and B-line steps so both lines begin early; keep each line's
+own internal step order unchanged.
 For two phones, the first Unload_B_Output(phone_base) must be followed by
 Transport_B_Output_Pick before starting the second phone with Load_B_Pick.
 For two cars, the first Unload_A_Output(car_base) must be followed by
 Transport_A_Output_Pick before starting the second car with Load_A_Pick.
 
 Car plan on A:
-Load_A_Pick(car_frame), Transport_A_Pick_Assemble,
-Hold_A_Assemble(car_frame), Transport_A_Assemble_Pick,
 Load_A_Pick(car_base), Transport_A_Pick_Assemble,
+Transport_A_Assemble_Forward,
+Transport_A2_Clear_Pick, Load_A2_Pick(car_frame),
+Transport_A2_Pick_Assemble, Hold_A2_Assemble(car_frame),
+Transport_A2_Assemble_Clear, Transport_A_Forward_Assemble,
 Place_A_Assemble(car_frame, attach_to=car_base, layer=1),
 Transport_A_Assemble_Camera, Inspect_A, Transport_A_Camera_Output,
 Unload_A_Output(car_base).
 
 Phone plan on B:
-Load_B_Pick(camera_module), Transport_B_Pick_Assemble,
-Hold_B_Assemble(camera_module), Transport_B_Assemble_Pick,
 Load_B_Pick(phone_base), Transport_B_Pick_Assemble,
-Place_B_Assemble(camera_module, attach_to=phone_base, layer=1),
-Transport_B_Assemble_Clear,
+Transport_B_Assemble_Forward,
 Transport_B2_Clear_Pick, Load_B2_Pick(screen), Transport_B2_Pick_Assemble,
 Hold_B2_Assemble(screen), Transport_B2_Assemble_Clear,
-Transport_B_Clear_Assemble,
-Place_B_Assemble(screen, attach_to=phone_base, layer=2),
+Transport_B_Forward_Assemble,
+Place_B_Assemble(screen, attach_to=phone_base, layer=1),
+Transport_B_Assemble_Forward,
+Transport_B2_Clear_Pick, Load_B2_Pick(camera_module),
+Transport_B2_Pick_Assemble, Hold_B2_Assemble(camera_module),
+Transport_B2_Assemble_Clear, Transport_B_Forward_Assemble,
+Place_B_Assemble(camera_module, attach_to=phone_base, layer=2),
 Transport_B_Assemble_Camera, Inspect_B, Transport_B_Camera_Output,
 Unload_B_Output(phone_base).
 

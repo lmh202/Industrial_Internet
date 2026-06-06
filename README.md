@@ -103,12 +103,15 @@ python main.py --parse-only "连续生产一辆车和两部手机"
 {
   "plan_name": "one_car",
   "steps": [
-    {"tool": "Load_A_Pick", "args": {"part": "car_frame"}},
-    {"tool": "Transport_A_Pick_Assemble", "args": {}},
-    {"tool": "Hold_A_Assemble", "args": {"part": "car_frame"}},
-    {"tool": "Transport_A_Assemble_Pick", "args": {}},
     {"tool": "Load_A_Pick", "args": {"part": "car_base"}},
     {"tool": "Transport_A_Pick_Assemble", "args": {}},
+    {"tool": "Transport_A_Assemble_Forward", "args": {}},
+    {"tool": "Transport_A2_Clear_Pick", "args": {}},
+    {"tool": "Load_A2_Pick", "args": {"part": "car_frame"}},
+    {"tool": "Transport_A2_Pick_Assemble", "args": {}},
+    {"tool": "Hold_A2_Assemble", "args": {"part": "car_frame"}},
+    {"tool": "Transport_A2_Assemble_Clear", "args": {}},
+    {"tool": "Transport_A_Forward_Assemble", "args": {}},
     {"tool": "Place_A_Assemble", "args": {"part": "car_frame", "attach_to": "car_base", "layer": 1}},
     {"tool": "Transport_A_Assemble_Camera", "args": {}},
     {"tool": "Inspect_A", "args": {}},
@@ -124,15 +127,23 @@ python main.py --parse-only "连续生产一辆车和两部手机"
 
 ```text
 Load_A_Pick(part, local_offset?)
+Load_A2_Pick(car_frame)
 Load_B_Pick(part, local_offset?)
-Load_B2_Pick(screen)
+Load_B2_Pick(screen or camera_module)
 Transport_A_Pick_Assemble
 Transport_A_Assemble_Pick
+Transport_A_Assemble_Forward
+Transport_A_Forward_Assemble
 Transport_A_Assemble_Camera
 Transport_A_Camera_Output
 Transport_A_Output_Pick
+Transport_A2_Clear_Pick
+Transport_A2_Pick_Assemble
+Transport_A2_Assemble_Clear
 Transport_B_Pick_Assemble
 Transport_B_Assemble_Pick
+Transport_B_Assemble_Forward
+Transport_B_Forward_Assemble
 Transport_B_Assemble_Clear
 Transport_B_Clear_Assemble
 Transport_B_Assemble_Camera
@@ -142,6 +153,7 @@ Transport_B2_Clear_Pick
 Transport_B2_Pick_Assemble
 Transport_B2_Assemble_Clear
 Hold_A_Assemble(part)
+Hold_A2_Assemble(part)
 Hold_B_Assemble(part)
 Hold_B2_Assemble(part)
 Place_A_Assemble(part, attach_to?, layer?, local_offset?)

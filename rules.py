@@ -111,6 +111,17 @@ def _production_plan_from_text(text: str) -> dict[str, Any] | None:
     if not products:
         return None
 
+    if _looks_like_parallel_start(text) and car_count and phone_count:
+        car_steps = _repeated_product_steps("car", car_count)
+        phone_steps = _repeated_product_steps("phone", phone_count)
+        return {
+            "plan_name": f"parallel_start_{car_count}_car_{phone_count}_phone",
+            "steps": _interleave_independent_steps(car_steps, phone_steps),
+            "assumptions": [
+                "Car and phone line steps are interleaved to start both lines early.",
+            ],
+        }
+
     steps = []
     produced = {"car": 0, "phone": 0}
     for product, quantity, _index in sorted(products, key=lambda item: item[2]):
@@ -131,6 +142,48 @@ def _production_plan_from_text(text: str) -> dict[str, Any] | None:
     if produced["phone"]:
         name_parts.append(f"{produced['phone']}_phone")
     return {"plan_name": "produce_" + "_".join(name_parts), "steps": steps}
+
+
+def _looks_like_parallel_start(text: str) -> bool:
+    return any(word in text for word in (
+        "同时",
+        "同步",
+        "一起",
+        "并行",
+        "同时启动",
+        "simultaneously",
+        "atthesametime",
+        "inparallel",
+        "starttogether",
+    ))
+
+
+def _repeated_product_steps(product: str, quantity: int) -> list[dict[str, Any]]:
+    steps = []
+    for index in range(quantity):
+        if product == "car":
+            if index > 0:
+                steps.append({"tool": "Transport_A_Output_Pick", "args": {}})
+            steps.extend(_car_steps())
+        else:
+            if index > 0:
+                steps.append({"tool": "Transport_B_Output_Pick", "args": {}})
+            steps.extend(_phone_steps())
+    return steps
+
+
+def _interleave_independent_steps(
+    car_steps: list[dict[str, Any]],
+    phone_steps: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    steps = []
+    max_len = max(len(car_steps), len(phone_steps))
+    for index in range(max_len):
+        if index < len(car_steps):
+            steps.append(car_steps[index])
+        if index < len(phone_steps):
+            steps.append(phone_steps[index])
+    return steps
 
 
 def _looks_like_production(text: str) -> bool:
@@ -230,12 +283,15 @@ def _first_product_index(text: str, aliases: tuple[str, ...]) -> int:
 
 def _car_steps() -> list[dict[str, Any]]:
     return [
-        {"tool": "Load_A_Pick", "args": {"part": "car_frame"}},
-        {"tool": "Transport_A_Pick_Assemble", "args": {}},
-        {"tool": "Hold_A_Assemble", "args": {"part": "car_frame"}},
-        {"tool": "Transport_A_Assemble_Pick", "args": {}},
         {"tool": "Load_A_Pick", "args": {"part": "car_base"}},
         {"tool": "Transport_A_Pick_Assemble", "args": {}},
+        {"tool": "Transport_A_Assemble_Forward", "args": {}},
+        {"tool": "Transport_A2_Clear_Pick", "args": {}},
+        {"tool": "Load_A2_Pick", "args": {"part": "car_frame"}},
+        {"tool": "Transport_A2_Pick_Assemble", "args": {}},
+        {"tool": "Hold_A2_Assemble", "args": {"part": "car_frame"}},
+        {"tool": "Transport_A2_Assemble_Clear", "args": {}},
+        {"tool": "Transport_A_Forward_Assemble", "args": {}},
         {
             "tool": "Place_A_Assemble",
             "args": {"part": "car_frame", "attach_to": "car_base", "layer": 1},
@@ -249,26 +305,29 @@ def _car_steps() -> list[dict[str, Any]]:
 
 def _phone_steps() -> list[dict[str, Any]]:
     return [
-        {"tool": "Load_B_Pick", "args": {"part": "camera_module"}},
-        {"tool": "Transport_B_Pick_Assemble", "args": {}},
-        {"tool": "Hold_B_Assemble", "args": {"part": "camera_module"}},
-        {"tool": "Transport_B_Assemble_Pick", "args": {}},
         {"tool": "Load_B_Pick", "args": {"part": "phone_base"}},
         {"tool": "Transport_B_Pick_Assemble", "args": {}},
-        {
-            "tool": "Place_B_Assemble",
-            "args": {"part": "camera_module", "attach_to": "phone_base"},
-        },
-        {"tool": "Transport_B_Assemble_Clear", "args": {}},
+        {"tool": "Transport_B_Assemble_Forward", "args": {}},
         {"tool": "Transport_B2_Clear_Pick", "args": {}},
         {"tool": "Load_B2_Pick", "args": {"part": "screen"}},
         {"tool": "Transport_B2_Pick_Assemble", "args": {}},
         {"tool": "Hold_B2_Assemble", "args": {"part": "screen"}},
         {"tool": "Transport_B2_Assemble_Clear", "args": {}},
-        {"tool": "Transport_B_Clear_Assemble", "args": {}},
+        {"tool": "Transport_B_Forward_Assemble", "args": {}},
         {
             "tool": "Place_B_Assemble",
-            "args": {"part": "screen", "attach_to": "phone_base", "layer": 2},
+            "args": {"part": "screen", "attach_to": "phone_base", "layer": 1},
+        },
+        {"tool": "Transport_B_Assemble_Forward", "args": {}},
+        {"tool": "Transport_B2_Clear_Pick", "args": {}},
+        {"tool": "Load_B2_Pick", "args": {"part": "camera_module"}},
+        {"tool": "Transport_B2_Pick_Assemble", "args": {}},
+        {"tool": "Hold_B2_Assemble", "args": {"part": "camera_module"}},
+        {"tool": "Transport_B2_Assemble_Clear", "args": {}},
+        {"tool": "Transport_B_Forward_Assemble", "args": {}},
+        {
+            "tool": "Place_B_Assemble",
+            "args": {"part": "camera_module", "attach_to": "phone_base", "layer": 2},
         },
         {"tool": "Transport_B_Assemble_Camera", "args": {}},
         {"tool": "Inspect_B", "args": {}},
