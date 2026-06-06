@@ -5,8 +5,26 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from planner import ProductionAgent, ProductionPlanner, SYSTEM_PROMPT
-from rules import DEFAULT_LINE_PART, LINE_PARTS, PART_ALIASES, rule_plan_from_prompt
+from planner import (
+    OPERATION_SUBAGENT_PROMPT,
+    SYSTEM_PROMPT,
+    OperationPlanningSubAgent,
+    ProductionAgent,
+    ProductionPlanner,
+)
+from process_compiler import (
+    compile_process_operations,
+    compile_process_plan,
+    validate_process_plan,
+)
+from process_knowledge import PRODUCT_SPECS, build_process_knowledge_prompt
+from rules import (
+    DEFAULT_LINE_PART,
+    LINE_PARTS,
+    PART_ALIASES,
+    rule_plan_from_prompt,
+    rule_process_plan_from_prompt,
+)
 from tool_registry import (
     ALLOWED_TOOLS,
     CROSS_LINE_TOOLS,
@@ -43,7 +61,10 @@ __all__ = [
     "PART_ALIASES",
     "PLACE_TOOLS",
     "PLAN_TRANSPORT_ROUTES",
+    "PRODUCT_SPECS",
     "PlanValidationError",
+    "OPERATION_SUBAGENT_PROMPT",
+    "OperationPlanningSubAgent",
     "ProductionAgent",
     "ProductionPlanner",
     "SUPPORTED_PARTS",
@@ -53,9 +74,14 @@ __all__ = [
     "TRANSPORT_TOOLS",
     "TaskParseError",
     "UNLOAD_TOOLS",
+    "build_process_knowledge_prompt",
+    "compile_process_operations",
+    "compile_process_plan",
     "plan_to_json",
     "rule_plan_from_prompt",
+    "rule_process_plan_from_prompt",
     "tasks_to_json",
     "validate_plan",
     "validate_plan_sequence",
+    "validate_process_plan",
 ]

@@ -5,11 +5,13 @@ from tempfile import TemporaryDirectory
 from agent import (
     PlanValidationError,
     ProductionAgent,
+    rule_process_plan_from_prompt,
     validate_plan,
     validate_plan_sequence,
 )
 from collision_manager import CollisionManager
 from factory_controller import FactoryController, ProductionStepError
+from process_compiler import compile_process_plan, validate_process_plan
 from scene_config import (
     LINE_B_CENTER_X,
     SHUTTLE_SAFE_MARGIN,
@@ -19,6 +21,63 @@ from scene_config import (
 )
 from tool_registry import TOOL_REGISTRY, build_tool_prompt
 import main
+
+
+CAR_PROCESS_PLAN = {
+    "plan_name": "one_car",
+    "strategy": "sequential",
+    "actions": [{"action": "produce_car"}],
+}
+
+PHONE_PROCESS_PLAN = {
+    "plan_name": "one_phone",
+    "strategy": "sequential",
+    "actions": [{"action": "produce_phone"}],
+}
+
+CAR_OPERATION_PLAN = {
+    "plan_name": "one_car",
+    "strategy": "sequential",
+    "operations": [
+        {"op": "load_base", "line": "A", "part": "car_base"},
+        {
+            "op": "assemble",
+            "line": "A",
+            "base": "car_base",
+            "part": "car_frame",
+            "supplier": "A2",
+            "layer": 1,
+        },
+        {"op": "inspect", "line": "A"},
+        {"op": "unload", "line": "A", "part": "car_base"},
+    ],
+}
+
+PHONE_OPERATION_PLAN = {
+    "plan_name": "one_phone",
+    "strategy": "sequential",
+    "operations": [
+        {"op": "load_base", "line": "B", "part": "phone_base"},
+        {
+            "op": "assemble",
+            "line": "B",
+            "base": "phone_base",
+            "part": "screen",
+            "supplier": "B2",
+            "layer": 1,
+        },
+        {
+            "op": "assemble",
+            "line": "B",
+            "base": "phone_base",
+            "part": "camera_module",
+            "supplier": "B2",
+            "layer": 2,
+        },
+        {"op": "inspect", "line": "B"},
+        {"op": "unload", "line": "B", "part": "phone_base"},
+    ],
+}
 
 
 CAR_PLAN = {
@@ -107,8 +166,23 @@ class PlannerTests(unittest.TestCase):
     def test_validates_phone_plan(self):
         self.assertEqual(validate_plan(PHONE_PLAN)["plan_name"], "one_phone")
 
+    def test_compiles_high_level_process_plan_to_tool_plan(self):
+        plan = compile_process_plan(CAR_PROCESS_PLAN)
+
+        self.assertEqual(plan["plan_name"], "one_car")
+        self.assertEqual(plan["steps"], CAR_PLAN["steps"])
+
+    def test_rejects_invalid_high_level_process_product(self):
+        with self.assertRaises(PlanValidationError):
+            validate_process_plan({
+                "plan_name": "bad",
+                "strategy": "sequential",
+                "actions": [{"action": "produce_tablet"}],
+            })
+
     def test_agent_returns_validated_tool_plan(self):
-        agent = ProductionAgent(llm_client=FakeLLMClient(CAR_PLAN))
+        agent = ProductionAgent(
+            llm_client=FakeLLMClient([CAR_PROCESS_PLAN, CAR_OPERATION_PLAN]))
         plan = agent.run("生产一辆车")
         self.assertEqual(plan["steps"][0]["tool"], "Load_A_Pick")
 
@@ -190,20 +264,16 @@ class PlannerTests(unittest.TestCase):
     def test_agent_retries_invalid_sequence_plan(self):
         bad_plan = {
             "plan_name": "bad_phone",
-            "steps": [
-                {"tool": "Load_B_Pick", "args": {"part": "camera_module"}},
-                {"tool": "Transport_B_Pick_Assemble", "args": {}},
-                {"tool": "Transport_B_Assemble_Clear", "args": {}},
-                {"tool": "Load_B_Pick", "args": {"part": "screen"}},
-            ],
+            "strategy": "sequential",
+            "actions": [{"action": "produce_tablet"}],
         }
-        llm = FakeLLMClient([bad_plan, PHONE_PLAN])
+        llm = FakeLLMClient([bad_plan, PHONE_PROCESS_PLAN, PHONE_OPERATION_PLAN])
         agent = ProductionAgent(llm_client=llm)
 
         plan = agent.run("produce one phone")
 
         self.assertEqual(plan["plan_name"], "one_phone")
-        self.assertEqual(llm.calls, 2)
+        self.assertEqual(llm.calls, 3)
 
     def test_rejects_unknown_tool_and_macro(self):
         with self.assertRaises(PlanValidationError):
@@ -273,6 +343,27 @@ class PlannerTests(unittest.TestCase):
         first_unload = tools.index("Unload_B_Output")
         self.assertEqual(tools[first_unload + 1], "Transport_B_Output_Pick")
         self.assertEqual(tools[first_unload + 2], "Load_B_Pick")
+
+    def test_rule_expands_two_phones_into_reset_action(self):
+        process_plan = rule_process_plan_from_prompt(
+            "\u8fde\u7eed\u751f\u4ea7\u4e24\u90e8\u624b\u673a"
+        )
+
+        self.assertEqual(process_plan["actions"], [
+            {"action": "produce_phone"},
+            {"action": "reset_status", "line": "B"},
+            {"action": "produce_phone"},
+        ])
+
+    def test_operations_require_explicit_reset_between_same_line_runs(self):
+        repeated_without_reset = {
+            "plan_name": "bad_two_phones",
+            "strategy": "sequential",
+            "operations": PHONE_OPERATION_PLAN["operations"] + PHONE_OPERATION_PLAN["operations"],
+        }
+
+        with self.assertRaisesRegex(PlanValidationError, "reset_status"):
+            compile_process_plan(repeated_without_reset)
 
     def test_sequence_rejects_loading_main_b_while_b_is_clear(self):
         plan = validate_plan({

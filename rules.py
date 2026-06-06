@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from process_compiler import compile_process_plan
 from tool_registry import SUPPORTED_PARTS
 from validator import PlanValidationError
 
@@ -68,8 +69,15 @@ PART_ALIASES = {
 
 
 def rule_plan_from_prompt(prompt: str) -> dict[str, Any] | None:
+    process_plan = rule_process_plan_from_prompt(prompt)
+    if process_plan is None:
+        return None
+    return compile_process_plan(process_plan)
+
+
+def rule_process_plan_from_prompt(prompt: str) -> dict[str, Any] | None:
     text = _normalize_prompt(prompt)
-    production_plan = _production_plan_from_text(text)
+    production_plan = _production_process_from_text(text)
     if production_plan is not None:
         return production_plan
 
@@ -88,14 +96,14 @@ def rule_plan_from_prompt(prompt: str) -> dict[str, Any] | None:
         assumptions.append(f"Unspecified line {line} part defaults to {part}.")
     if part not in LINE_PARTS[line]:
         return None
-    return _move_part_to_output_plan(line, part, assumptions)
+    return _move_part_to_output_process(line, part, assumptions)
 
 
 def _normalize_prompt(prompt: str) -> str:
     return prompt.strip().lower().replace(" ", "")
 
 
-def _production_plan_from_text(text: str) -> dict[str, Any] | None:
+def _production_process_from_text(text: str) -> dict[str, Any] | None:
     if not _looks_like_production(text):
         return None
 
@@ -112,36 +120,39 @@ def _production_plan_from_text(text: str) -> dict[str, Any] | None:
         return None
 
     if _looks_like_parallel_start(text) and car_count and phone_count:
-        car_steps = _repeated_product_steps("car", car_count)
-        phone_steps = _repeated_product_steps("phone", phone_count)
         return {
             "plan_name": f"parallel_start_{car_count}_car_{phone_count}_phone",
-            "steps": _interleave_independent_steps(car_steps, phone_steps),
+            "strategy": "parallel_start",
+            "actions": _production_actions(products),
             "assumptions": [
                 "Car and phone line steps are interleaved to start both lines early.",
             ],
         }
 
-    steps = []
-    produced = {"car": 0, "phone": 0}
-    for product, quantity, _index in sorted(products, key=lambda item: item[2]):
-        for _ in range(quantity):
-            if product == "car":
-                if produced["car"] > 0:
-                    steps.append({"tool": "Transport_A_Output_Pick", "args": {}})
-                steps.extend(_car_steps())
-            else:
-                if produced["phone"] > 0:
-                    steps.append({"tool": "Transport_B_Output_Pick", "args": {}})
-                steps.extend(_phone_steps())
-            produced[product] += 1
-
     name_parts = []
-    if produced["car"]:
-        name_parts.append(f"{produced['car']}_car")
-    if produced["phone"]:
-        name_parts.append(f"{produced['phone']}_phone")
-    return {"plan_name": "produce_" + "_".join(name_parts), "steps": steps}
+    if car_count:
+        name_parts.append(f"{car_count}_car")
+    if phone_count:
+        name_parts.append(f"{phone_count}_phone")
+    return {
+        "plan_name": "produce_" + "_".join(name_parts),
+        "strategy": "sequential",
+        "actions": _production_actions(products),
+    }
+
+
+def _production_actions(products: list[tuple[str, int, int]]) -> list[dict[str, Any]]:
+    actions = []
+    line_has_output = {"A": False, "B": False}
+    for product, quantity, _index in sorted(products, key=lambda item: item[2]):
+        line = "A" if product == "car" else "B"
+        for _ in range(quantity):
+            if line_has_output[line]:
+                actions.append({"action": "reset_status", "line": line})
+                line_has_output[line] = False
+            actions.append({"action": f"produce_{product}"})
+            line_has_output[line] = True
+    return actions
 
 
 def _looks_like_parallel_start(text: str) -> bool:
@@ -156,34 +167,6 @@ def _looks_like_parallel_start(text: str) -> bool:
         "inparallel",
         "starttogether",
     ))
-
-
-def _repeated_product_steps(product: str, quantity: int) -> list[dict[str, Any]]:
-    steps = []
-    for index in range(quantity):
-        if product == "car":
-            if index > 0:
-                steps.append({"tool": "Transport_A_Output_Pick", "args": {}})
-            steps.extend(_car_steps())
-        else:
-            if index > 0:
-                steps.append({"tool": "Transport_B_Output_Pick", "args": {}})
-            steps.extend(_phone_steps())
-    return steps
-
-
-def _interleave_independent_steps(
-    car_steps: list[dict[str, Any]],
-    phone_steps: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    steps = []
-    max_len = max(len(car_steps), len(phone_steps))
-    for index in range(max_len):
-        if index < len(car_steps):
-            steps.append(car_steps[index])
-        if index < len(phone_steps):
-            steps.append(phone_steps[index])
-    return steps
 
 
 def _looks_like_production(text: str) -> bool:
@@ -281,61 +264,6 @@ def _first_product_index(text: str, aliases: tuple[str, ...]) -> int:
     return min(indexes) if indexes else len(text)
 
 
-def _car_steps() -> list[dict[str, Any]]:
-    return [
-        {"tool": "Load_A_Pick", "args": {"part": "car_base"}},
-        {"tool": "Transport_A_Pick_Assemble", "args": {}},
-        {"tool": "Transport_A_Assemble_Forward", "args": {}},
-        {"tool": "Transport_A2_Clear_Pick", "args": {}},
-        {"tool": "Load_A2_Pick", "args": {"part": "car_frame"}},
-        {"tool": "Transport_A2_Pick_Assemble", "args": {}},
-        {"tool": "Hold_A2_Assemble", "args": {"part": "car_frame"}},
-        {"tool": "Transport_A2_Assemble_Clear", "args": {}},
-        {"tool": "Transport_A_Forward_Assemble", "args": {}},
-        {
-            "tool": "Place_A_Assemble",
-            "args": {"part": "car_frame", "attach_to": "car_base", "layer": 1},
-        },
-        {"tool": "Transport_A_Assemble_Camera", "args": {}},
-        {"tool": "Inspect_A", "args": {}},
-        {"tool": "Transport_A_Camera_Output", "args": {}},
-        {"tool": "Unload_A_Output", "args": {"part": "car_base"}},
-    ]
-
-
-def _phone_steps() -> list[dict[str, Any]]:
-    return [
-        {"tool": "Load_B_Pick", "args": {"part": "phone_base"}},
-        {"tool": "Transport_B_Pick_Assemble", "args": {}},
-        {"tool": "Transport_B_Assemble_Forward", "args": {}},
-        {"tool": "Transport_B2_Clear_Pick", "args": {}},
-        {"tool": "Load_B2_Pick", "args": {"part": "screen"}},
-        {"tool": "Transport_B2_Pick_Assemble", "args": {}},
-        {"tool": "Hold_B2_Assemble", "args": {"part": "screen"}},
-        {"tool": "Transport_B2_Assemble_Clear", "args": {}},
-        {"tool": "Transport_B_Forward_Assemble", "args": {}},
-        {
-            "tool": "Place_B_Assemble",
-            "args": {"part": "screen", "attach_to": "phone_base", "layer": 1},
-        },
-        {"tool": "Transport_B_Assemble_Forward", "args": {}},
-        {"tool": "Transport_B2_Clear_Pick", "args": {}},
-        {"tool": "Load_B2_Pick", "args": {"part": "camera_module"}},
-        {"tool": "Transport_B2_Pick_Assemble", "args": {}},
-        {"tool": "Hold_B2_Assemble", "args": {"part": "camera_module"}},
-        {"tool": "Transport_B2_Assemble_Clear", "args": {}},
-        {"tool": "Transport_B_Forward_Assemble", "args": {}},
-        {
-            "tool": "Place_B_Assemble",
-            "args": {"part": "camera_module", "attach_to": "phone_base", "layer": 2},
-        },
-        {"tool": "Transport_B_Assemble_Camera", "args": {}},
-        {"tool": "Inspect_B", "args": {}},
-        {"tool": "Transport_B_Camera_Output", "args": {}},
-        {"tool": "Unload_B_Output", "args": {"part": "phone_base"}},
-    ]
-
-
 def _looks_like_move_to_output(text: str) -> bool:
     has_move = any(word in text for word in (
         "move",
@@ -422,46 +350,18 @@ def _line_for_part(part: str) -> str:
     raise PlanValidationError(f"Unsupported part: {part}")
 
 
-def _move_part_to_output_plan(
+def _move_part_to_output_process(
     line: str,
     part: str,
     assumptions: list[str] | None = None,
 ) -> dict[str, Any]:
     if part not in SUPPORTED_PARTS:
         raise PlanValidationError(f"Unsupported part: {part}")
-    if line == "A":
-        steps = [
-            {"tool": "Load_A_Pick", "args": {"part": part}},
-            {"tool": "Transport_A_Pick_Assemble", "args": {}},
-            {"tool": "Transport_A_Assemble_Camera", "args": {}},
-            {"tool": "Transport_A_Camera_Output", "args": {}},
-            {"tool": "Unload_A_Output", "args": {"part": part}},
-        ]
-    elif part == "screen":
-        steps = [
-            {"tool": "Transport_B_Pick_Assemble", "args": {}},
-            {"tool": "Transport_B2_Clear_Pick", "args": {}},
-            {"tool": "Load_B2_Pick", "args": {"part": "screen"}},
-            {"tool": "Transport_B2_Pick_Assemble", "args": {}},
-            {"tool": "Hold_B2_Assemble", "args": {"part": "screen"}},
-            {"tool": "Transport_B2_Assemble_Clear", "args": {}},
-            {"tool": "Place_B_Assemble", "args": {"part": "screen", "layer": 0}},
-            {"tool": "Transport_B_Assemble_Camera", "args": {}},
-            {"tool": "Transport_B_Camera_Output", "args": {}},
-            {"tool": "Unload_B_Output", "args": {"part": "screen"}},
-        ]
-    else:
-        steps = [
-            {"tool": "Load_B_Pick", "args": {"part": part}},
-            {"tool": "Transport_B_Pick_Assemble", "args": {}},
-            {"tool": "Transport_B_Assemble_Camera", "args": {}},
-            {"tool": "Transport_B_Camera_Output", "args": {}},
-            {"tool": "Unload_B_Output", "args": {"part": part}},
-        ]
 
     plan: dict[str, Any] = {
         "plan_name": f"move_{line.lower()}_{part}_to_output",
-        "steps": steps,
+        "strategy": "sequential",
+        "actions": [{"action": "move_to_output", "line": line, "part": part}],
     }
     if assumptions:
         plan["assumptions"] = assumptions
