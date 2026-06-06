@@ -264,3 +264,22 @@ python -m unittest discover -s tests
 python main.py --parse-only "连续生产一辆车和两部手机"
 python main.py --demo-mid-transfer
 ```
+
+## Agent architecture notes
+
+The planning stack is split into formal Agent layers:
+
+- `tool_registry.py`: the single tool whitelist and metadata source, including
+  routes, argument schemas, executor names, and prompt descriptions.
+- `rules.py`: deterministic parsing for common commands that should not depend
+  on the local model, such as moving a specific line part to `output`.
+- `planner.py`: local-model planner with validation-first retries.
+- `validator.py` and `state.py`: JSON shape validation plus abstract station,
+  part, and holding-state simulation before CoppeliaSim execution.
+- `factory_controller.py`: registered tool executor that returns a structured
+  execution report for each step.
+
+The current autonomy policy is validation-first: invalid model plans are retried
+up to three times, but the runtime does not perform autonomous replanning after
+an execution failure. Each user command reloads the scene before execution, so
+the state model currently assumes a fresh factory state per command.

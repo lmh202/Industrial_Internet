@@ -151,7 +151,13 @@ def _run_prompt_once(sim, agent: ProductionAgent, prompt: str) -> None:
     print(f"[Planner] 计划书: {plan_to_json(plan)}")
     configure_scene(sim)
     factory = FactoryController(sim)
-    factory.execute_tool_plan(plan)
+    report = factory.execute_tool_plan(plan)
+    completed = sum(1 for step in report["steps"] if step["ok"])
+    print(f"[Executor] completed {completed}/{len(report['steps'])} steps")
+    if not report["ok"]:
+        failed = next((step for step in report["steps"] if not step["ok"]), None)
+        message = failed["message"] if failed else "unknown execution failure"
+        raise RuntimeError(message)
 
 
 def _run_demo_mid_transfer_once(sim) -> None:

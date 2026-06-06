@@ -25,6 +25,8 @@ from scene_config import (
     Y_PUT,
 )
 from shuttle_controller import ShuttleController
+from schemas import ExecutionReport, ToolResult
+from tool_registry import TOOL_REGISTRY, TRANSPORT_TOOL_ROUTES
 
 
 class SceneObjectError(RuntimeError):
@@ -34,24 +36,6 @@ class SceneObjectError(RuntimeError):
 class ProductionStepError(RuntimeError):
     """Raised when a required pick/place/move step cannot be completed."""
 
-
-TRANSPORT_TOOL_ROUTES = {
-    "Transport_A_Pick_Assemble": ("A", "pick", "assemble"),
-    "Transport_A_Assemble_Pick": ("A", "assemble", "pick"),
-    "Transport_A_Assemble_Camera": ("A", "assemble", "camera"),
-    "Transport_A_Camera_Output": ("A", "camera", "output"),
-    "Transport_A_Output_Pick": ("A", "output", "pick"),
-    "Transport_B_Pick_Assemble": ("B", "pick", "assemble"),
-    "Transport_B_Assemble_Pick": ("B", "assemble", "pick"),
-    "Transport_B_Assemble_Clear": ("B", "assemble", "clear"),
-    "Transport_B_Clear_Assemble": ("B", "clear", "assemble"),
-    "Transport_B_Assemble_Camera": ("B", "assemble", "camera"),
-    "Transport_B_Camera_Output": ("B", "camera", "output"),
-    "Transport_B_Output_Pick": ("B", "output", "pick"),
-    "Transport_B2_Clear_Pick": ("B2", "clear", "pick"),
-    "Transport_B2_Pick_Assemble": ("B2", "pick", "assemble"),
-    "Transport_B2_Assemble_Clear": ("B2", "assemble", "clear"),
-}
 
 STATION_Y = {
     "pick": Y_PUT,
@@ -160,15 +144,43 @@ class FactoryController:
         for name, shuttle in self.shuttles.items():
             shuttle.set_collision_checker(self.collision.checker_for(name))
 
-    def execute_tool_plan(self, plan: dict):
+    def execute_tool_plan(self, plan: dict) -> dict:
         self._init_tool_state()
         steps = plan.get("steps", [])
+        results = []
         print(f"[Planner] execute plan: {plan.get('plan_name', '<unnamed>')}")
         for index, step in enumerate(steps, start=1):
             tool = step["tool"]
             args = step.get("args", {})
             print(f"[Tool] {index:02d}. {tool} {args}")
-            self._execute_tool(tool, args)
+            try:
+                message = self._execute_tool(tool, args) or "completed"
+            except Exception as exc:
+                results.append(ToolResult(
+                    index=index,
+                    tool=tool,
+                    args=args,
+                    ok=False,
+                    message=str(exc),
+                ))
+                print(f"[Tool] {index:02d}. failed: {exc}")
+                return ExecutionReport(
+                    plan_name=plan.get("plan_name", "<unnamed>"),
+                    ok=False,
+                    steps=results,
+                ).to_dict()
+            results.append(ToolResult(
+                index=index,
+                tool=tool,
+                args=args,
+                ok=True,
+                message=message,
+            ))
+        return ExecutionReport(
+            plan_name=plan.get("plan_name", "<unnamed>"),
+            ok=True,
+            steps=results,
+        ).to_dict()
 
     def _init_tool_state(self):
         self.tool_state = {
@@ -178,53 +190,37 @@ class FactoryController:
         }
 
     def _execute_tool(self, tool: str, args: dict):
-        if tool in TRANSPORT_TOOL_ROUTES:
-            line, source, target = TRANSPORT_TOOL_ROUTES[tool]
-            self._tool_transport(line, source, target)
-            return
-        if tool == "Load_A_Pick":
-            self._tool_load("A", args)
-            return
-        if tool == "Load_B_Pick":
-            self._tool_load("B", args)
-            return
-        if tool == "Load_B2_Pick":
-            self._tool_load("B2", args)
-            return
-        if tool == "Hold_A_Assemble":
-            self._tool_hold("A", args)
-            return
-        if tool == "Hold_B_Assemble":
-            self._tool_hold("B", args)
-            return
-        if tool == "Hold_B2_Assemble":
-            self._tool_hold_from("B2", "B", args)
-            return
-        if tool == "Place_A_Assemble":
-            self._tool_place("A", args)
-            return
-        if tool == "Place_B_Assemble":
-            self._tool_place("B", args)
-            return
-        if tool == "Inspect_A":
-            self._tool_inspect("A")
-            return
-        if tool == "Inspect_B":
-            self._tool_inspect("B")
-            return
-        if tool == "Unload_A_Output":
-            self._tool_unload("A", args)
-            return
-        if tool == "Unload_B_Output":
-            self._tool_unload("B", args)
-            return
-        if tool == "Transport_A_B":
-            self._tool_cross_line("A", "B", args)
-            return
-        if tool == "Transport_B_A":
-            self._tool_cross_line("B", "A", args)
-            return
-        raise ProductionStepError(f"Unknown tool: {tool}")
+        spec = TOOL_REGISTRY.get(tool)
+        if spec is None:
+            raise ProductionStepError(f"Unknown tool: {tool}")
+        executor = getattr(self, spec.executor_name, None)
+        if executor is None:
+            raise ProductionStepError(
+                f"Tool {tool} has missing executor: {spec.executor_name}")
+        executor(spec, args)
+        return "completed"
+
+    def _execute_transport_tool(self, spec, _args: dict):
+        line, source, target = spec.route
+        self._tool_transport(line, source, target)
+
+    def _execute_load_tool(self, spec, args: dict):
+        self._tool_load(spec.line, args)
+
+    def _execute_hold_tool(self, spec, args: dict):
+        self._tool_hold_from(spec.source_line, spec.arm_line, args)
+
+    def _execute_place_tool(self, spec, args: dict):
+        self._tool_place(spec.line, args)
+
+    def _execute_inspect_tool(self, spec, _args: dict):
+        self._tool_inspect(spec.line)
+
+    def _execute_unload_tool(self, spec, args: dict):
+        self._tool_unload(spec.line, args)
+
+    def _execute_cross_line_tool(self, spec, args: dict):
+        self._tool_cross_line(spec.source_line, spec.target_line, args)
 
     def _tool_transport(self, line: str, source: str, target: str):
         self._require_station(line, source)

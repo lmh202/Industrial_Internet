@@ -11,6 +11,7 @@ from agent import (
 from collision_manager import CollisionManager
 from factory_controller import FactoryController, ProductionStepError
 from scene_config import LINE_B_CENTER_X, SHUTTLE_SAFE_MARGIN, SHUTTLE_SIZE_X, Y_ASSEM
+from tool_registry import TOOL_REGISTRY, build_tool_prompt
 import main
 
 
@@ -135,6 +136,31 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(plan["steps"][-1],
                          {"tool": "Unload_A_Output", "args": {"part": "car_frame"}})
 
+    def test_rule_plans_one_car_production(self):
+        agent = ProductionAgent(llm_client=DisabledLLMClient())
+        plan = agent.run("生产一辆车")
+
+        self.assertEqual(plan["plan_name"], "produce_1_car")
+        self.assertEqual(plan["steps"], CAR_PLAN["steps"])
+
+    def test_rule_plans_one_phone_production(self):
+        agent = ProductionAgent(llm_client=DisabledLLMClient())
+        plan = agent.run("生产一部手机")
+
+        self.assertEqual(plan["plan_name"], "produce_1_phone")
+        self.assertEqual(plan["steps"], PHONE_PLAN["steps"])
+
+    def test_rule_plans_mixed_product_quantities(self):
+        agent = ProductionAgent(llm_client=DisabledLLMClient())
+        plan = agent.run("生产车一辆手机两部")
+        tools = [step["tool"] for step in plan["steps"]]
+
+        self.assertEqual(plan["plan_name"], "produce_1_car_2_phone")
+        self.assertEqual(tools.count("Unload_A_Output"), 1)
+        self.assertEqual(tools.count("Unload_B_Output"), 2)
+        first_phone_unload = tools.index("Unload_B_Output")
+        self.assertEqual(tools[first_phone_unload + 1], "Transport_B_Output_Pick")
+
     def test_agent_retries_invalid_sequence_plan(self):
         bad_plan = {
             "plan_name": "bad_phone",
@@ -249,6 +275,29 @@ class PlannerTests(unittest.TestCase):
         self.assertNotIn('"plan_name": "first"', text)
 
 
+class ToolRegistryTests(unittest.TestCase):
+    def test_registry_describes_all_expected_tools(self):
+        for tool in (
+            "Load_A_Pick",
+            "Transport_B2_Clear_Pick",
+            "Hold_B2_Assemble",
+            "Place_B_Assemble",
+            "Unload_B_Output",
+            "Transport_A_B",
+        ):
+            spec = TOOL_REGISTRY[tool]
+            self.assertEqual(spec.name, tool)
+            self.assertTrue(spec.executor_name)
+            self.assertIsInstance(spec.args_schema, tuple)
+
+    def test_generated_tool_prompt_uses_registry(self):
+        prompt = build_tool_prompt()
+
+        self.assertIn("Load_A_Pick", prompt)
+        self.assertIn("Transport_B2_Clear_Pick", prompt)
+        self.assertIn("Transport_A_B", prompt)
+
+
 class FakeSim:
     def __init__(self, positions):
         self.positions = positions
@@ -274,7 +323,7 @@ class ToolExecutorStateTests(unittest.TestCase):
         controller = FactoryController.__new__(FactoryController)
         calls = []
         controller._execute_tool = lambda tool, args: calls.append((tool, args))
-        controller.execute_tool_plan({
+        report = controller.execute_tool_plan({
             "plan_name": "dispatch",
             "steps": [
                 {"tool": "Load_A_Pick", "args": {"part": "car_frame"}},
@@ -288,6 +337,31 @@ class ToolExecutorStateTests(unittest.TestCase):
                 ("Transport_A_Pick_Assemble", {}),
             ],
         )
+        self.assertTrue(report["ok"])
+        self.assertEqual(len(report["steps"]), 2)
+
+    def test_execute_tool_plan_reports_failure_and_stops(self):
+        controller = FactoryController.__new__(FactoryController)
+        calls = []
+
+        def fail_second(tool, args):
+            calls.append((tool, args))
+            if tool == "Transport_A_Pick_Assemble":
+                raise ProductionStepError("blocked path")
+
+        controller._execute_tool = fail_second
+        report = controller.execute_tool_plan({
+            "plan_name": "dispatch_failure",
+            "steps": [
+                {"tool": "Load_A_Pick", "args": {"part": "car_frame"}},
+                {"tool": "Transport_A_Pick_Assemble", "args": {}},
+                {"tool": "Transport_A_Assemble_Camera", "args": {}},
+            ],
+        })
+
+        self.assertFalse(report["ok"])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(report["steps"][-1]["message"], "blocked path")
 
     def test_hold_updates_assemble_state(self):
         controller = FactoryController.__new__(FactoryController)
