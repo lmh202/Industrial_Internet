@@ -72,17 +72,37 @@ Output shape:
   "assumptions": ["optional short assumption"]
 }}
 
-Allowed operation names: load_base, assemble, inspect, unload, reset_status,
-move_to_output.
-For car: load car_base, assemble car_frame supplied by A2, inspect A, unload
-car_base.
-For phone: load phone_base, assemble screen supplied by B2 before
-camera_module, assemble camera_module supplied by B2, inspect B, unload
+Think of each operation as one manufacturing-stage instruction, not as a robot
+command. Use these operation tokens in JSON, but reason about them in the
+following shop-floor language:
+
+- load_base means mount the product base onto the main slider of the selected
+  line at the pick station. The base remains on the main slider while the
+  product is built.
+- assemble means bring one supplied component from the auxiliary slider, let
+  the assembly arm briefly pick it at the assembly station, and place it onto
+  the named base at the requested layer. The supplier is A2 for line A and B2
+  for line B.
+- inspect means send the assembled product on the main slider to the camera
+  station and perform inspection on that line.
+- unload means move the inspected product to the output station and remove the
+  named finished/base part from the main slider.
+- reset_status means return a main slider that has just unloaded a product from
+  output back to pick before starting another product on the same line.
+- move_to_output means, for a direct transfer request, mount the named part on
+  its own line and send that part through the line to output without building a
+  full product.
+
+A car is built on line A by mounting car_base, placing car_frame supplied from
+A2 on top of car_base, inspecting line A, and unloading car_base. A phone is
+built on line B by mounting phone_base, placing screen supplied from B2 first,
+then camera_module supplied from B2, inspecting line B, and unloading
 phone_base.
-Translate reset_status actions to reset_status operations. For repeated
-products, keep reset_status between runs on the same line. For parallel_start,
-interleave independent A-line and B-line operations while preserving each line's
-internal order.
+
+For repeated products on the same line, insert reset_status between the unload
+of the previous product and the load_base of the next product. For
+parallel_start, you may interleave A-line and B-line operations to start both
+lines early, but never change the internal order of either line's process.
 
 {build_process_knowledge_prompt()}
 """.strip()

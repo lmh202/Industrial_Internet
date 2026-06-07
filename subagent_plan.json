@@ -94,6 +94,7 @@
     }
   ],
   "assumptions": [
-    "Assumes lines are initially ready and parts are available."
+    "Lines A and B are available and initialized.",
+    "No specific output movement requested, so reset_status is used to clear line state."
   ]
 }
