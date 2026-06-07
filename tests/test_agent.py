@@ -10,6 +10,8 @@ from agent import (
 )
 from collision_manager import CollisionManager
 from factory_controller import FactoryController, ProductionStepError
+from process_compiler import compile_process_plan, validate_process_plan
+from rules import rule_plan_from_prompt
 from scene_config import (
     LINE_B_CENTER_X,
     SHUTTLE_SAFE_MARGIN,
@@ -19,7 +21,6 @@ from scene_config import (
 )
 from tool_registry import TOOL_REGISTRY, build_tool_prompt
 import main
-import planner
 
 
 CAR_PLAN = {
@@ -79,6 +80,78 @@ PHONE_PLAN = {
     ],
 }
 
+CAR_PROCESS_PLAN = {
+    "plan_name": "one_car",
+    "strategy": "sequential",
+    "actions": [{"action": "produce_car"}],
+}
+
+PHONE_PROCESS_PLAN = {
+    "plan_name": "one_phone",
+    "strategy": "sequential",
+    "actions": [{"action": "produce_phone"}],
+}
+
+CAR_OPERATION_PLAN = {
+    "plan_name": "one_car",
+    "strategy": "sequential",
+    "operations": [
+        {"op": "load_base", "line": "A", "part": "car_base"},
+        {
+            "op": "assemble",
+            "line": "A",
+            "base": "car_base",
+            "part": "car_frame",
+            "supplier": "A2",
+            "layer": 1,
+        },
+        {"op": "inspect", "line": "A"},
+        {"op": "unload", "line": "A", "part": "car_base"},
+    ],
+}
+
+PHONE_OPERATION_PLAN = {
+    "plan_name": "one_phone",
+    "strategy": "sequential",
+    "operations": [
+        {"op": "load_base", "line": "B", "part": "phone_base"},
+        {
+            "op": "assemble",
+            "line": "B",
+            "base": "phone_base",
+            "part": "screen",
+            "supplier": "B2",
+            "layer": 1,
+        },
+        {
+            "op": "assemble",
+            "line": "B",
+            "base": "phone_base",
+            "part": "camera_module",
+            "supplier": "B2",
+            "layer": 2,
+        },
+        {"op": "inspect", "line": "B"},
+        {"op": "unload", "line": "B", "part": "phone_base"},
+    ],
+}
+
+PHONE_MOVE_PROCESS_PLAN = {
+    "plan_name": "move_phone_part_to_output",
+    "strategy": "sequential",
+    "actions": [
+        {"action": "move_to_output", "line": "B", "part": "phone_base"},
+    ],
+}
+
+PHONE_MOVE_OPERATION_PLAN = {
+    "plan_name": "move_phone_part_to_output",
+    "strategy": "sequential",
+    "operations": [
+        {"op": "move_to_output", "line": "B", "part": "phone_base"},
+    ],
+}
+
 
 class FakeLLMClient:
     def __init__(self, payload):
@@ -90,7 +163,7 @@ class FakeLLMClient:
     def is_configured(self):
         return True
 
-    def chat_json(self, _system_prompt, _user_prompt):
+    def chat_json(self, _system_prompt, _user_prompt, **_kwargs):
         self.user_prompts.append(_user_prompt)
         index = min(self.calls, len(self.payloads) - 1)
         self.calls += 1
@@ -110,65 +183,108 @@ class PlannerTests(unittest.TestCase):
     def test_validates_phone_plan(self):
         self.assertEqual(validate_plan(PHONE_PLAN)["plan_name"], "one_phone")
 
-    def test_agent_returns_validated_tool_plan(self):
-        agent = ProductionAgent(llm_client=FakeLLMClient(CAR_PLAN))
-        plan = agent.run("生产一辆车")
-        self.assertEqual(plan["steps"][0]["tool"], "Load_A_Pick")
+    def test_compiles_high_level_process_plan_to_tool_plan(self):
+        plan = compile_process_plan(CAR_PROCESS_PLAN)
 
-    def test_agent_uses_llm_before_matching_rule_plan(self):
-        llm = FakeLLMClient({"approved": True, "reason": "candidate matches request"})
-        agent = ProductionAgent(llm_client=llm)
-        plan = agent.run("生产一辆车")
-
-        self.assertEqual(llm.calls, 1)
-        self.assertEqual(plan["plan_name"], "produce_1_car")
-        self.assertEqual(plan["planning_source"], "llm_approved_candidate")
-        self.assertIn("Candidate JSON", llm.user_prompts[0])
-
-    def test_agent_generates_full_plan_when_candidate_is_rejected(self):
-        llm = FakeLLMClient([
-            {"approved": False, "reason": "needs changes"},
-            CAR_PLAN,
-        ])
-        agent = ProductionAgent(llm_client=llm)
-
-        plan = agent.run("生产一辆车")
-
-        self.assertEqual(llm.calls, 2)
         self.assertEqual(plan["plan_name"], "one_car")
-        self.assertEqual(plan["planning_source"], "llm")
-        self.assertEqual(plan["planning_hint"], "rule_candidate")
+        self.assertEqual(plan["steps"], CAR_PLAN["steps"])
 
-    def test_agent_does_not_use_rule_fallback_by_default(self):
+    def test_rejects_invalid_high_level_process_action(self):
+        with self.assertRaises(PlanValidationError):
+            validate_process_plan({
+                "plan_name": "bad",
+                "strategy": "sequential",
+                "actions": [{"action": "produce_tablet"}],
+            })
+
+    def test_agent_returns_validated_tool_plan(self):
+        agent = ProductionAgent(
+            llm_client=FakeLLMClient([CAR_PROCESS_PLAN, CAR_OPERATION_PLAN]))
+        plan = agent.run("生产一辆车")
+
+        self.assertEqual(plan["steps"][0]["tool"], "Load_A_Pick")
+        self.assertEqual(plan["planning_source"], "top_planner_operation_agent_compiler")
+        self.assertEqual(agent.last_top_level_plan, CAR_PROCESS_PLAN)
+        self.assertEqual(agent.last_subagent_plan, CAR_OPERATION_PLAN)
+
+    def test_agent_retries_invalid_top_plan(self):
         bad_plan = {
             "plan_name": "bad",
-            "steps": [{"tool": "Load_A_Pick", "args": {}}],
+            "strategy": "sequential",
+            "actions": [{"action": "produce_tablet"}],
         }
-        agent = ProductionAgent(llm_client=FakeLLMClient(bad_plan))
+        llm = FakeLLMClient([bad_plan, PHONE_PROCESS_PLAN, PHONE_OPERATION_PLAN])
+        agent = ProductionAgent(llm_client=llm)
+
+        plan = agent.run("produce one phone")
+
+        self.assertEqual(plan["plan_name"], "one_phone")
+        self.assertEqual(plan["steps"], PHONE_PLAN["steps"])
+        self.assertEqual(llm.calls, 3)
+
+    def test_agent_rejects_direct_operation_plan_from_top_planner(self):
+        llm = FakeLLMClient(CAR_OPERATION_PLAN)
+        agent = ProductionAgent(llm_client=llm)
+
+        with self.assertRaisesRegex(PlanValidationError, "high-level actions"):
+            agent.run("生产一辆车")
+
+    def test_agent_requires_configured_llm(self):
+        agent = ProductionAgent(llm_client=DisabledLLMClient())
+
+        with self.assertRaisesRegex(PlanValidationError, "LLM is not configured"):
+            agent.run("生产一辆车")
+
+    def test_agent_rejects_low_level_tool_plan_from_top_planner(self):
+        agent = ProductionAgent(llm_client=FakeLLMClient(CAR_PLAN))
 
         with self.assertRaises(PlanValidationError):
             agent.run("生产一辆车")
 
-    def test_agent_rule_fallback_requires_explicit_switch(self):
-        original = planner.AGENT_RULE_FALLBACK
-        planner.AGENT_RULE_FALLBACK = True
-        try:
-            bad_plan = {
-                "plan_name": "bad",
-                "steps": [{"tool": "Load_A_Pick", "args": {}}],
-            }
-            agent = ProductionAgent(llm_client=FakeLLMClient(bad_plan))
+    def test_agent_retries_top_plan_with_unrequested_move_to_output(self):
+        bad_top_plan = {
+            "plan_name": "bad_car",
+            "strategy": "sequential",
+            "actions": [
+                {"action": "produce_car"},
+                {"action": "move_to_output", "line": "A", "part": "car_base"},
+            ],
+        }
+        llm = FakeLLMClient([bad_top_plan, CAR_PROCESS_PLAN, CAR_OPERATION_PLAN])
+        agent = ProductionAgent(llm_client=llm)
 
-            plan = agent.run("生产一辆车")
-        finally:
-            planner.AGENT_RULE_FALLBACK = original
+        plan = agent.run("生产一辆车")
 
-        self.assertEqual(plan["planning_source"], "rule_fallback")
-        self.assertEqual(plan["plan_name"], "produce_1_car")
+        self.assertEqual(plan["steps"], CAR_PLAN["steps"])
+        self.assertEqual(llm.calls, 3)
+
+    def test_agent_retries_move_request_with_unrequested_production(self):
+        bad_top_plan = {
+            "plan_name": "bad_move",
+            "strategy": "sequential",
+            "actions": [
+                {"action": "produce_phone"},
+                {"action": "move_to_output", "line": "B", "part": "phone_base"},
+            ],
+        }
+        llm = FakeLLMClient([
+            bad_top_plan,
+            PHONE_MOVE_PROCESS_PLAN,
+            PHONE_MOVE_OPERATION_PLAN,
+        ])
+        agent = ProductionAgent(llm_client=llm)
+
+        plan = agent.run("\u628a\u624b\u673a\u4ea7\u7ebf\u4e2d\u7684"
+                         "\u67d0\u4e2a\u96f6\u4ef6\u79fb\u5230output\u4e2d")
+
+        self.assertEqual(plan["plan_name"], "move_phone_part_to_output")
+        self.assertEqual(plan["steps"][0]["tool"], "Load_B_Pick")
+        self.assertEqual(plan["steps"][-1]["tool"], "Unload_B_Output")
+        self.assertEqual(llm.calls, 3)
 
     def test_rule_plans_unspecified_phone_part_to_output(self):
-        agent = ProductionAgent(llm_client=DisabledLLMClient())
-        plan = agent.run("把手机产线中的某个零件移到output中")
+        plan = rule_plan_from_prompt("把手机产线中的某个零件移到output中")
+        self.assertIsNotNone(plan)
         tools = [step["tool"] for step in plan["steps"]]
 
         self.assertEqual(plan["plan_name"], "move_b_phone_base_to_output")
@@ -182,8 +298,8 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(plan["steps"][0]["args"]["part"], "phone_base")
 
     def test_rule_plans_phone_screen_to_output_with_aux_shuttle(self):
-        agent = ProductionAgent(llm_client=DisabledLLMClient())
-        plan = agent.run("把手机产线中的屏幕移到output中")
+        plan = rule_plan_from_prompt("把手机产线中的屏幕移到output中")
+        self.assertIsNotNone(plan)
         tools = [step["tool"] for step in plan["steps"]]
 
         self.assertEqual(plan["plan_name"], "move_b_screen_to_output")
@@ -193,8 +309,8 @@ class PlannerTests(unittest.TestCase):
                          {"tool": "Unload_B_Output", "args": {"part": "screen"}})
 
     def test_rule_plans_car_frame_to_output(self):
-        agent = ProductionAgent(llm_client=DisabledLLMClient())
-        plan = agent.run("把汽车产线中的车架送到输出区")
+        plan = rule_plan_from_prompt("把汽车产线中的车架送到输出区")
+        self.assertIsNotNone(plan)
 
         self.assertEqual(plan["plan_name"], "move_a_car_frame_to_output")
         self.assertEqual(plan["steps"][0],
@@ -203,22 +319,22 @@ class PlannerTests(unittest.TestCase):
                          {"tool": "Unload_A_Output", "args": {"part": "car_frame"}})
 
     def test_rule_plans_one_car_production(self):
-        agent = ProductionAgent(llm_client=DisabledLLMClient())
-        plan = agent.run("生产一辆车")
+        plan = rule_plan_from_prompt("生产一辆车")
+        self.assertIsNotNone(plan)
 
         self.assertEqual(plan["plan_name"], "produce_1_car")
         self.assertEqual(plan["steps"], CAR_PLAN["steps"])
 
     def test_rule_plans_one_phone_production(self):
-        agent = ProductionAgent(llm_client=DisabledLLMClient())
-        plan = agent.run("生产一部手机")
+        plan = rule_plan_from_prompt("生产一部手机")
+        self.assertIsNotNone(plan)
 
         self.assertEqual(plan["plan_name"], "produce_1_phone")
         self.assertEqual(plan["steps"], PHONE_PLAN["steps"])
 
     def test_rule_plans_mixed_product_quantities(self):
-        agent = ProductionAgent(llm_client=DisabledLLMClient())
-        plan = agent.run("生产车一辆手机两部")
+        plan = rule_plan_from_prompt("生产车一辆手机两部")
+        self.assertIsNotNone(plan)
         tools = [step["tool"] for step in plan["steps"]]
 
         self.assertEqual(plan["plan_name"], "produce_1_car_2_phone")
@@ -228,11 +344,11 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(tools[first_phone_unload + 1], "Transport_B_Output_Pick")
 
     def test_rule_interleaves_simultaneous_car_and_phone_start(self):
-        agent = ProductionAgent(llm_client=DisabledLLMClient())
-        plan = agent.run(
+        plan = rule_plan_from_prompt(
             "\u540c\u65f6\u542f\u52a8\u751f\u4ea7\u4e00\u90e8"
             "\u624b\u673a\u548c\u4e00\u8f86\u6c7d\u8f66"
         )
+        self.assertIsNotNone(plan)
         tools = [step["tool"] for step in plan["steps"]]
 
         self.assertEqual(plan["plan_name"], "parallel_start_1_car_1_phone")
@@ -244,20 +360,20 @@ class PlannerTests(unittest.TestCase):
     def test_agent_retries_invalid_sequence_plan(self):
         bad_plan = {
             "plan_name": "bad_phone",
-            "steps": [
-                {"tool": "Load_B_Pick", "args": {"part": "camera_module"}},
-                {"tool": "Transport_B_Pick_Assemble", "args": {}},
-                {"tool": "Transport_B_Assemble_Clear", "args": {}},
-                {"tool": "Load_B_Pick", "args": {"part": "screen"}},
+            "strategy": "sequential",
+            "operations": [
+                {"op": "assemble", "line": "B", "base": "phone_base",
+                 "part": "screen", "supplier": "B2", "layer": 1},
             ],
         }
-        llm = FakeLLMClient([bad_plan, PHONE_PLAN])
+        llm = FakeLLMClient([PHONE_PROCESS_PLAN, bad_plan, PHONE_OPERATION_PLAN])
         agent = ProductionAgent(llm_client=llm)
 
         plan = agent.run("produce one phone")
 
         self.assertEqual(plan["plan_name"], "one_phone")
-        self.assertEqual(llm.calls, 2)
+        self.assertEqual(plan["steps"], PHONE_PLAN["steps"])
+        self.assertEqual(llm.calls, 3)
 
     def test_rejects_unknown_tool_and_macro(self):
         with self.assertRaises(PlanValidationError):

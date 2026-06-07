@@ -26,18 +26,27 @@ class OpenAICompatibleClient:
     def is_configured(self) -> bool:
         return bool(self.api_key and self.base_url and self.base_model)
 
-    def chat_json(self, system_prompt: str, user_prompt: str) -> dict:
+    def chat_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 512,
+    ) -> dict:
         if not self.is_configured:
             raise LLMError("LLM is not configured; API_KEY is empty.")
 
         if self._uses_native_ollama():
-            return self._chat_json_native_ollama(system_prompt, user_prompt)
+            return self._chat_json_native_ollama(
+                system_prompt,
+                user_prompt,
+                max_tokens,
+            )
 
         payload = {
             "model": self.base_model,
             "temperature": 0,
             "response_format": {"type": "json_object"},
-            "max_tokens": 4096,
+            "max_tokens": max_tokens,
             "stream": False,
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -71,7 +80,12 @@ class OpenAICompatibleClient:
         self.preload_model()
         return payload
 
-    def _chat_json_native_ollama(self, system_prompt: str, user_prompt: str) -> dict:
+    def _chat_json_native_ollama(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int,
+    ) -> dict:
         payload = {
             "model": self.base_model,
             "messages": [
@@ -83,7 +97,7 @@ class OpenAICompatibleClient:
             "think": False,
             "options": {
                 "temperature": 0,
-                "num_predict": 4096,
+                "num_predict": max_tokens,
             },
         }
         if self.keep_alive:

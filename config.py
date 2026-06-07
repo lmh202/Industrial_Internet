@@ -20,18 +20,8 @@ BASE_URL = os.getenv("BASE_URL", "http://localhost:11434/v1")
 API_KEY = os.getenv("API_KEY", "ollama")
 LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "360"))
 LLM_KEEP_ALIVE = os.getenv("LLM_KEEP_ALIVE", "-1")
-AGENT_RULE_FALLBACK = os.getenv("AGENT_RULE_FALLBACK", "0").lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
-AGENT_RULE_HINTS = os.getenv("AGENT_RULE_HINTS", "1").lower() not in {
-    "0",
-    "false",
-    "no",
-    "off",
-}
+LLM_TOP_PLAN_TOKENS = int(os.getenv("LLM_TOP_PLAN_TOKENS", "256"))
+LLM_OPERATION_PLAN_TOKENS = int(os.getenv("LLM_OPERATION_PLAN_TOKENS", "512"))
 
 COPPELIASIM_EXE = os.getenv(
     "COPPELIASIM_EXE",

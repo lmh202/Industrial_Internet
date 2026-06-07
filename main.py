@@ -29,6 +29,8 @@ from llm_client import LLMError, OpenAICompatibleClient
 
 
 PLAN_OUTPUT_PATH = Path(__file__).resolve().parent / "plan.json"
+TOP_PLAN_OUTPUT_PATH = Path(__file__).resolve().parent / "top_plan.json"
+SUBAGENT_PLAN_OUTPUT_PATH = Path(__file__).resolve().parent / "subagent_plan.json"
 
 
 def launch_coppeliasim() -> subprocess.Popen | None:
@@ -147,7 +149,7 @@ def _model_help_status() -> str:
 
 def _run_prompt_once(sim, agent: ProductionAgent, prompt: str) -> None:
     plan = agent.run(prompt)
-    _save_plan(plan)
+    _save_planner_outputs(agent, plan)
     print(f"[Planner] 计划书: {plan_to_json(plan)}")
     print(f"[Planner] source: {plan.get('planning_source', 'unknown')}")
     configure_scene(sim)
@@ -168,10 +170,28 @@ def _run_demo_mid_transfer_once(sim) -> None:
 
 
 def _save_plan(plan: dict) -> None:
-    PLAN_OUTPUT_PATH.write_text(
-        json.dumps(plan, ensure_ascii=False, indent=2),
-        encoding="utf-8")
+    _write_json(PLAN_OUTPUT_PATH, plan)
     print(f"[Planner] 计划已保存: {PLAN_OUTPUT_PATH}")
+
+
+def _save_planner_outputs(agent: ProductionAgent, plan: dict) -> None:
+    top_level_plan = getattr(agent, "last_top_level_plan", None)
+    if top_level_plan is not None:
+        _write_json(TOP_PLAN_OUTPUT_PATH, top_level_plan)
+        print(f"[Planner] top plan saved: {TOP_PLAN_OUTPUT_PATH}")
+
+    subagent_plan = getattr(agent, "last_subagent_plan", None)
+    if subagent_plan is not None:
+        _write_json(SUBAGENT_PLAN_OUTPUT_PATH, subagent_plan)
+        print(f"[Planner] operation plan saved: {SUBAGENT_PLAN_OUTPUT_PATH}")
+
+    _save_plan(plan)
+
+
+def _write_json(path: Path, payload: dict) -> None:
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8")
 
 
 def _interactive_loop(sim, agent: ProductionAgent) -> None:
@@ -237,7 +257,7 @@ def main(argv=None) -> int:
     if args.parse_only:
         prompt = " ".join(args.prompt)
         plan = agent.run(prompt)
-        _save_plan(plan)
+        _save_planner_outputs(agent, plan)
         print(f"[Planner] 计划书: {plan_to_json(plan)}")
         return 0
 

@@ -14,17 +14,19 @@ pip install coppeliasim-zmqremoteapi-client numpy
 默认使用本地 Ollama 模型解析自然语言，不调用云端 API。请先确认本机已安装并启动 Ollama，且已拉取当前使用的模型：
 
 ```bash
-ollama pull qwen3.6
+ollama pull qwen3
 ```
 
 默认配置位于 `config.py`：
 
 ```bash
-set BASE_MODEL=qwen3.6:latest
+set BASE_MODEL=qwen3:latest
 set BASE_URL=http://localhost:11434/v1
 set API_KEY=ollama
 set LLM_TIMEOUT=360
 set LLM_KEEP_ALIVE=-1
+set LLM_TOP_PLAN_TOKENS=256
+set LLM_OPERATION_PLAN_TOKENS=512
 ```
 
 其中 `API_KEY=ollama` 只是为了兼容 OpenAI-style 客户端，本地 Ollama 服务不会校验该值。`LLM_KEEP_ALIVE=-1` 表示普通调试运行后通过 Ollama 原生请求刷新模型常驻状态，避免每次运行都重新加载；需要释放显存/内存时再手动执行卸载命令。环境变量仍可覆盖这些默认值。模型不可用、输出无法校验或计划包含非法工具时，程序会直接报错停止，不再回退到固定的“造车/造手机”模板。
@@ -296,19 +298,25 @@ up to three times, but the runtime does not perform autonomous replanning after
 an execution failure. Each user command reloads the scene before execution, so
 the state model currently assumes a fresh factory state per command.
 
-By default, the main planning path is LLM-first. When a deterministic candidate
-exists, `ProductionPlanner` sends it to the local model for approval; execution
-continues only if the model returns an approval JSON, and the saved plan is
-marked `planning_source: llm_approved_candidate`. If the model rejects the
-candidate or no candidate exists, the planner asks the model to generate the
-full tool-call plan and validates it before execution.
+The main planning path is a strict three-layer Agent pipeline:
 
-Deterministic rules are kept only as an offline or explicit fallback. Set
-`AGENT_RULE_FALLBACK=1` to allow that fallback after LLM validation retries fail;
-leave it unset for the course demo requirement that the process is driven by
-local LLM planning. Set `AGENT_RULE_HINTS=0` to disable candidate hints and force
-full LLM plan generation for every request.
+- Top Planner: the local qwen model converts natural language into high-level
+  production actions such as `produce_car`, `produce_phone`, `reset_status`, and
+  `move_to_output`.
+- Operation Agent: the local qwen model converts those actions into explicit
+  process operations such as `load_base`, `assemble`, `inspect`, and `unload`.
+- Compiler: deterministic Python compiles process operations into executable
+  tool calls and validates them through the existing tool/state validators.
 
-Generated plans include `planning_source`, and execution reports preserve that
-field, so demos can show whether a run used `llm`, `llm_approved_candidate`, or
-`rule_fallback`.
+`--parse-only` and normal runs save the full planning trace:
+
+```text
+top_plan.json        # Top Planner action plan
+subagent_plan.json   # Operation Agent process plan
+plan.json            # Final executable tool-call plan
+```
+
+Generated tool plans include
+`planning_source: top_planner_operation_agent_compiler`, and execution reports
+preserve that field so demos can show that qwen drives the planning process
+before deterministic compilation and execution.
