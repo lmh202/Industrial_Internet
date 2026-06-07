@@ -19,6 +19,7 @@ from scene_config import (
 )
 from tool_registry import TOOL_REGISTRY, build_tool_prompt
 import main
+import planner
 
 
 CAR_PLAN = {
@@ -83,12 +84,14 @@ class FakeLLMClient:
     def __init__(self, payload):
         self.payloads = payload if isinstance(payload, list) else [payload]
         self.calls = 0
+        self.user_prompts = []
 
     @property
     def is_configured(self):
         return True
 
     def chat_json(self, _system_prompt, _user_prompt):
+        self.user_prompts.append(_user_prompt)
         index = min(self.calls, len(self.payloads) - 1)
         self.calls += 1
         return self.payloads[index]
@@ -111,6 +114,57 @@ class PlannerTests(unittest.TestCase):
         agent = ProductionAgent(llm_client=FakeLLMClient(CAR_PLAN))
         plan = agent.run("生产一辆车")
         self.assertEqual(plan["steps"][0]["tool"], "Load_A_Pick")
+
+    def test_agent_uses_llm_before_matching_rule_plan(self):
+        llm = FakeLLMClient({"approved": True, "reason": "candidate matches request"})
+        agent = ProductionAgent(llm_client=llm)
+        plan = agent.run("生产一辆车")
+
+        self.assertEqual(llm.calls, 1)
+        self.assertEqual(plan["plan_name"], "produce_1_car")
+        self.assertEqual(plan["planning_source"], "llm_approved_candidate")
+        self.assertIn("Candidate JSON", llm.user_prompts[0])
+
+    def test_agent_generates_full_plan_when_candidate_is_rejected(self):
+        llm = FakeLLMClient([
+            {"approved": False, "reason": "needs changes"},
+            CAR_PLAN,
+        ])
+        agent = ProductionAgent(llm_client=llm)
+
+        plan = agent.run("生产一辆车")
+
+        self.assertEqual(llm.calls, 2)
+        self.assertEqual(plan["plan_name"], "one_car")
+        self.assertEqual(plan["planning_source"], "llm")
+        self.assertEqual(plan["planning_hint"], "rule_candidate")
+
+    def test_agent_does_not_use_rule_fallback_by_default(self):
+        bad_plan = {
+            "plan_name": "bad",
+            "steps": [{"tool": "Load_A_Pick", "args": {}}],
+        }
+        agent = ProductionAgent(llm_client=FakeLLMClient(bad_plan))
+
+        with self.assertRaises(PlanValidationError):
+            agent.run("生产一辆车")
+
+    def test_agent_rule_fallback_requires_explicit_switch(self):
+        original = planner.AGENT_RULE_FALLBACK
+        planner.AGENT_RULE_FALLBACK = True
+        try:
+            bad_plan = {
+                "plan_name": "bad",
+                "steps": [{"tool": "Load_A_Pick", "args": {}}],
+            }
+            agent = ProductionAgent(llm_client=FakeLLMClient(bad_plan))
+
+            plan = agent.run("生产一辆车")
+        finally:
+            planner.AGENT_RULE_FALLBACK = original
+
+        self.assertEqual(plan["planning_source"], "rule_fallback")
+        self.assertEqual(plan["plan_name"], "produce_1_car")
 
     def test_rule_plans_unspecified_phone_part_to_output(self):
         agent = ProductionAgent(llm_client=DisabledLLMClient())

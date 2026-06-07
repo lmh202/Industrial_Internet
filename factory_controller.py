@@ -145,6 +145,7 @@ class FactoryController:
         self._init_tool_state()
         steps = plan.get("steps", [])
         results = []
+        planning_source = plan.get("planning_source")
         print(f"[Planner] execute plan: {plan.get('plan_name', '<unnamed>')}")
         index = 1
         while index <= len(steps):
@@ -172,6 +173,7 @@ class FactoryController:
                             plan_name=plan.get("plan_name", "<unnamed>"),
                             ok=False,
                             steps=results,
+                            planning_source=planning_source,
                         ).to_dict()
 
                     print(
@@ -195,6 +197,7 @@ class FactoryController:
                                 plan_name=plan.get("plan_name", "<unnamed>"),
                                 ok=False,
                                 steps=results,
+                                planning_source=planning_source,
                             ).to_dict()
                         results.append(ToolResult(
                             index=serial_index,
@@ -234,6 +237,7 @@ class FactoryController:
                     plan_name=plan.get("plan_name", "<unnamed>"),
                     ok=False,
                     steps=results,
+                    planning_source=planning_source,
                 ).to_dict()
             results.append(ToolResult(
                 index=index,
@@ -247,6 +251,7 @@ class FactoryController:
             plan_name=plan.get("plan_name", "<unnamed>"),
             ok=True,
             steps=results,
+            planning_source=planning_source,
         ).to_dict()
 
     def _init_tool_state(self):

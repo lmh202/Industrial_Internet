@@ -295,3 +295,20 @@ The current autonomy policy is validation-first: invalid model plans are retried
 up to three times, but the runtime does not perform autonomous replanning after
 an execution failure. Each user command reloads the scene before execution, so
 the state model currently assumes a fresh factory state per command.
+
+By default, the main planning path is LLM-first. When a deterministic candidate
+exists, `ProductionPlanner` sends it to the local model for approval; execution
+continues only if the model returns an approval JSON, and the saved plan is
+marked `planning_source: llm_approved_candidate`. If the model rejects the
+candidate or no candidate exists, the planner asks the model to generate the
+full tool-call plan and validates it before execution.
+
+Deterministic rules are kept only as an offline or explicit fallback. Set
+`AGENT_RULE_FALLBACK=1` to allow that fallback after LLM validation retries fail;
+leave it unset for the course demo requirement that the process is driven by
+local LLM planning. Set `AGENT_RULE_HINTS=0` to disable candidate hints and force
+full LLM plan generation for every request.
+
+Generated plans include `planning_source`, and execution reports preserve that
+field, so demos can show whether a run used `llm`, `llm_approved_candidate`, or
+`rule_fallback`.

@@ -15,11 +15,23 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 
 # Required LLM configuration locations.
 # Defaults point to the local Ollama deployment used by this project.
-BASE_MODEL = os.getenv("BASE_MODEL", "qwen3.6:latest")
+BASE_MODEL = os.getenv("BASE_MODEL", "qwen3:latest")
 BASE_URL = os.getenv("BASE_URL", "http://localhost:11434/v1")
 API_KEY = os.getenv("API_KEY", "ollama")
 LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "360"))
 LLM_KEEP_ALIVE = os.getenv("LLM_KEEP_ALIVE", "-1")
+AGENT_RULE_FALLBACK = os.getenv("AGENT_RULE_FALLBACK", "0").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+AGENT_RULE_HINTS = os.getenv("AGENT_RULE_HINTS", "1").lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
 
 COPPELIASIM_EXE = os.getenv(
     "COPPELIASIM_EXE",

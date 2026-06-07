@@ -149,6 +149,7 @@ def _run_prompt_once(sim, agent: ProductionAgent, prompt: str) -> None:
     plan = agent.run(prompt)
     _save_plan(plan)
     print(f"[Planner] 计划书: {plan_to_json(plan)}")
+    print(f"[Planner] source: {plan.get('planning_source', 'unknown')}")
     configure_scene(sim)
     factory = FactoryController(sim)
     report = factory.execute_tool_plan(plan)

@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
-from config import API_KEY, BASE_MODEL, BASE_URL, LLM_KEEP_ALIVE, LLM_TIMEOUT
+from config import (
+    AGENT_RULE_FALLBACK,
+    AGENT_RULE_HINTS,
+    API_KEY,
+    BASE_MODEL,
+    BASE_URL,
+    LLM_KEEP_ALIVE,
+    LLM_TIMEOUT,
+)
 from llm_client import LLMError, OpenAICompatibleClient
 from rules import rule_plan_from_prompt
 from tool_registry import build_tool_prompt
@@ -88,6 +97,16 @@ If the user says an unspecified car-line part, use car_base.
 """.strip()
 
 
+APPROVAL_SYSTEM = """
+Return one JSON object only: {"approved": true|false, "reason": "..."}.
+You are approving or rejecting a candidate factory tool-call plan.
+Approve only if the candidate correctly satisfies the user request, uses only
+allowed tools, and keeps all tool arguments explicit. Do not return a tool plan.
+If the user request is ambiguous and the candidate includes an explicit
+assumption or default, approve when that assumption is reasonable and executable.
+""".strip()
+
+
 class ProductionPlanner:
     def __init__(self, llm_client: OpenAICompatibleClient | None = None):
         self.llm_client = llm_client or OpenAICompatibleClient(
@@ -103,16 +122,20 @@ class ProductionPlanner:
         if not prompt.strip():
             raise PlanValidationError("Prompt is empty.")
 
-        rule_plan = rule_plan_from_prompt(prompt)
-        if rule_plan is not None:
-            plan = validate_plan(rule_plan)
-            validate_plan_sequence(plan)
-            return plan
-
         if not self.llm_client.is_configured:
-            raise PlanValidationError("LLM is not configured.")
+            return self._rule_plan_or_raise(prompt, "LLM is not configured.")
 
-        planning_prompt = prompt
+        rule_plan = rule_plan_from_prompt(prompt) if AGENT_RULE_HINTS else None
+        if rule_plan is not None:
+            approved = self._approve_candidate_plan(prompt, rule_plan)
+            if approved is not None:
+                plan = validate_plan(rule_plan)
+                validate_plan_sequence(plan)
+                plan["planning_source"] = "llm_approved_candidate"
+                plan["planning_approval"] = approved
+                return plan
+
+        planning_prompt = self._planning_prompt(prompt, rule_plan)
         last_error: PlanValidationError | None = None
         for attempt in range(3):
             try:
@@ -122,17 +145,79 @@ class ProductionPlanner:
             try:
                 plan = validate_plan(payload)
                 validate_plan_sequence(plan)
+                plan["planning_source"] = "llm"
+                plan["planning_attempts"] = attempt + 1
+                if rule_plan is not None:
+                    plan["planning_hint"] = "rule_candidate"
                 return plan
             except PlanValidationError as exc:
                 last_error = exc
                 if attempt == 2:
                     break
                 planning_prompt = (
-                    f"{prompt}\n\n"
+                    f"{self._planning_prompt(prompt, rule_plan)}\n\n"
                     f"Previous JSON plan was invalid: {exc}. "
                     "Return a corrected JSON object only. Do not explain."
                 )
+        if AGENT_RULE_FALLBACK:
+            return self._rule_plan_or_raise(
+                prompt,
+                f"LLM planning failed after validation retries: {last_error}",
+            )
         raise last_error or PlanValidationError("Cannot create a valid tool plan.")
+
+    def _rule_plan_or_raise(self, prompt: str, reason: str) -> dict[str, Any]:
+        rule_plan = rule_plan_from_prompt(prompt)
+        if rule_plan is None:
+            raise PlanValidationError(reason)
+        plan = validate_plan(rule_plan)
+        validate_plan_sequence(plan)
+        plan["planning_source"] = "rule_fallback"
+        assumptions = list(plan.get("assumptions", []))
+        assumptions.append(reason)
+        plan["assumptions"] = assumptions
+        return plan
+
+    def _planning_prompt(
+        self,
+        prompt: str,
+        rule_plan: dict[str, Any] | None,
+    ) -> str:
+        if rule_plan is None:
+            return prompt
+        return (
+            f"User request: {prompt}\n\n"
+            "A deterministic tool-template candidate is provided as context only. "
+            "You must act as the planner: review it against the system tool rules, "
+            "fix it if needed, and return the final executable JSON plan yourself. "
+            "Do not copy any invalid step.\n"
+            f"Candidate JSON: {json.dumps(rule_plan, ensure_ascii=False)}"
+        )
+
+    def _approve_candidate_plan(
+        self,
+        prompt: str,
+        rule_plan: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        user_prompt = (
+            f"User request: {prompt}\n"
+            f"Candidate JSON: {json.dumps(rule_plan, ensure_ascii=False)}"
+        )
+        try:
+            payload = self.llm_client.chat_json(APPROVAL_SYSTEM, user_prompt)
+        except LLMError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        approved = payload.get("approved")
+        if not isinstance(approved, bool):
+            return None
+        if not approved:
+            return None
+        reason = payload.get("reason", "")
+        if not isinstance(reason, str):
+            reason = ""
+        return {"approved": True, "reason": reason.strip()}
 
 
 ProductionAgent = ProductionPlanner

@@ -58,10 +58,14 @@ class ExecutionReport:
     plan_name: str
     ok: bool
     steps: list[ToolResult]
+    planning_source: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "plan_name": self.plan_name,
             "ok": self.ok,
             "steps": [step.to_dict() for step in self.steps],
         }
+        if self.planning_source:
+            payload["planning_source"] = self.planning_source
+        return payload
