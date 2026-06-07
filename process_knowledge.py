@@ -13,7 +13,7 @@ PRODUCT_SPECS = {
         "constraints": [
             "car_base stays on the main A shuttle.",
             "car_frame is supplied by auxiliary shuttle A2.",
-            "Robot_Assemble_Car should only hold car_frame briefly during transfer.",
+            "car_frame is held only during the assembly transfer.",
         ],
     },
     "phone": {
@@ -27,7 +27,7 @@ PRODUCT_SPECS = {
             "phone_base stays on the main B shuttle.",
             "screen and camera_module are supplied by auxiliary shuttle B2.",
             "screen must be installed before camera_module.",
-            "Robot_Assemble_Phone should only hold supplied parts briefly.",
+            "supplied parts are held only during the assembly transfer.",
         ],
     },
 }

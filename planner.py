@@ -46,16 +46,42 @@ No tool names, no operations, no explanations.
 
 OPERATION_SUBAGENT_PROMPT = """
 Return one compact JSON object only.
-You are Operation Agent. Expand Top Planner actions into explicit operations.
-Schema:
-{"plan_name":"same_name","strategy":"sequential|parallel_start","operations":[]}
-Templates:
-produce_car -> [{"op":"load_base","line":"A","part":"car_base"},{"op":"assemble","line":"A","base":"car_base","part":"car_frame","supplier":"A2","layer":1},{"op":"inspect","line":"A"},{"op":"unload","line":"A","part":"car_base"}]
-produce_phone -> [{"op":"load_base","line":"B","part":"phone_base"},{"op":"assemble","line":"B","base":"phone_base","part":"screen","supplier":"B2","layer":1},{"op":"assemble","line":"B","base":"phone_base","part":"camera_module","supplier":"B2","layer":2},{"op":"inspect","line":"B"},{"op":"unload","line":"B","part":"phone_base"}]
-reset_status -> {"op":"reset_status","line":"same_line"}
-move_to_output -> {"op":"move_to_output","line":"same_line","part":"same_part"}
-For parallel_start, A-line and B-line operations may be interleaved, but each line order must stay unchanged.
-No tool names, no explanations.
+No markdown, prose, code, coordinates, robot names, CoppeliaSim handles, tool
+names, loops, macros, or low-level tool calls.
+
+You are Operation Agent. Convert a high-level action plan into an ordered
+operation plan. Do not use product-level shortcuts. Each product must be
+expanded into process operations.
+The operation list must be a pure expansion of the given action list. Do not
+add any production, reset_status, move_to_output, line, or part that is absent
+from the Top Planner actions or product knowledge.
+
+Output shape:
+{{
+  "plan_name": "same_or_clear_name",
+  "strategy": "sequential" | "parallel_start",
+  "operations": []
+}}
+
+Allowed operation names: load_base, assemble, inspect, unload, reset_status,
+move_to_output.
+Every operation object must use the key "op" for the operation name; never use
+"operation", "action", or "type" as the operation-name key.
+Operation fields: load_base uses line and part; assemble uses line, base, part,
+supplier, layer; inspect uses line; unload uses line and part; reset_status
+uses line; move_to_output uses line and part.
+For car: load car_base on line A, assemble car_frame from supplier A2 at layer
+1, inspect line A, unload car_base. Car uses only car_base and car_frame.
+For phone: load phone_base on line B, assemble screen from supplier B2 at layer
+1, assemble camera_module from supplier B2 at layer 2, inspect line B, unload
+phone_base. Phone uses only phone_base, screen, and camera_module. screen must
+be before camera_module.
+Translate reset_status and move_to_output actions directly into matching
+operations. Do not invent reset_status after unload; reset_status is allowed
+only when the Top Planner action list already contains reset_status.
+move_to_output is allowed only when the Top Planner action list already
+contains move_to_output. For parallel_start, interleave independent A-line and
+B-line work while preserving each line's internal order.
 """.strip()
 
 
