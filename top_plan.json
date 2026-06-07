@@ -1,0 +1,26 @@
+{
+  "plan_name": "produce_two_phones_then_car",
+  "strategy": "sequential",
+  "actions": [
+    {
+      "action": "produce_phone"
+    },
+    {
+      "action": "reset_status",
+      "line": "B"
+    },
+    {
+      "action": "produce_phone"
+    },
+    {
+      "action": "reset_status",
+      "line": "B"
+    },
+    {
+      "action": "produce_car"
+    }
+  ],
+  "assumptions": [
+    "Assumes lines are initially ready and parts are available."
+  ]
+}

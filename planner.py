@@ -1,4 +1,4 @@
-"""LLM-backed production planner with deterministic guardrails."""
+"""LLM-backed production planner with validation guardrails."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from config import API_KEY, BASE_MODEL, BASE_URL, LLM_KEEP_ALIVE, LLM_TIMEOUT
 from llm_client import LLMError, OpenAICompatibleClient
 from process_compiler import compile_process_plan, validate_process_plan
 from process_knowledge import build_process_knowledge_prompt
-from rules import rule_process_plan_from_prompt
 from validator import PlanValidationError
 
 
@@ -92,6 +91,7 @@ internal order.
 class OperationPlanningSubAgent:
     def __init__(self, llm_client: OpenAICompatibleClient):
         self.llm_client = llm_client
+        self.last_operation_plan: dict[str, Any] | None = None
 
     def run(self, high_level_plan: dict[str, Any]) -> dict[str, Any]:
         prompt = (
@@ -108,6 +108,7 @@ class OperationPlanningSubAgent:
         process_plan = validate_process_plan(payload)
         if "operations" not in process_plan:
             raise PlanValidationError("Operation subagent must return operations.")
+        self.last_operation_plan = process_plan
         return process_plan
 
 
@@ -120,15 +121,16 @@ class ProductionPlanner:
             timeout=LLM_TIMEOUT,
             keep_alive=LLM_KEEP_ALIVE,
         )
+        self.last_top_level_plan: dict[str, Any] | None = None
+        self.last_subagent_plan: dict[str, Any] | None = None
 
     def run(self, prompt: str) -> dict[str, Any]:
         """Plan user text into a validated tool-call JSON object."""
         if not prompt.strip():
             raise PlanValidationError("Prompt is empty.")
 
-        rule_process_plan = rule_process_plan_from_prompt(prompt)
-        if rule_process_plan is not None:
-            return compile_process_plan(rule_process_plan)
+        self.last_top_level_plan = None
+        self.last_subagent_plan = None
 
         if not self.llm_client.is_configured:
             raise PlanValidationError("LLM is not configured.")
@@ -143,8 +145,10 @@ class ProductionPlanner:
                 raise PlanValidationError(f"Cannot create tool plan: {exc}") from exc
             try:
                 process_plan = validate_process_plan(payload)
+                self.last_top_level_plan = process_plan
                 if "actions" in process_plan or "jobs" in process_plan:
                     process_plan = operation_subagent.run(process_plan)
+                    self.last_subagent_plan = process_plan
                 return compile_process_plan(process_plan)
             except PlanValidationError as exc:
                 last_error = exc

@@ -5,7 +5,6 @@ from tempfile import TemporaryDirectory
 from agent import (
     PlanValidationError,
     ProductionAgent,
-    rule_process_plan_from_prompt,
     validate_plan,
     validate_plan_sequence,
 )
@@ -186,80 +185,11 @@ class PlannerTests(unittest.TestCase):
         plan = agent.run("生产一辆车")
         self.assertEqual(plan["steps"][0]["tool"], "Load_A_Pick")
 
-    def test_rule_plans_unspecified_phone_part_to_output(self):
+    def test_agent_requires_llm_for_common_production_prompt(self):
         agent = ProductionAgent(llm_client=DisabledLLMClient())
-        plan = agent.run("把手机产线中的某个零件移到output中")
-        tools = [step["tool"] for step in plan["steps"]]
 
-        self.assertEqual(plan["plan_name"], "move_b_phone_base_to_output")
-        self.assertEqual(tools, [
-            "Load_B_Pick",
-            "Transport_B_Pick_Assemble",
-            "Transport_B_Assemble_Camera",
-            "Transport_B_Camera_Output",
-            "Unload_B_Output",
-        ])
-        self.assertEqual(plan["steps"][0]["args"]["part"], "phone_base")
-
-    def test_rule_plans_phone_screen_to_output_with_aux_shuttle(self):
-        agent = ProductionAgent(llm_client=DisabledLLMClient())
-        plan = agent.run("把手机产线中的屏幕移到output中")
-        tools = [step["tool"] for step in plan["steps"]]
-
-        self.assertEqual(plan["plan_name"], "move_b_screen_to_output")
-        self.assertIn("Load_B2_Pick", tools)
-        self.assertIn("Hold_B2_Assemble", tools)
-        self.assertEqual(plan["steps"][-1],
-                         {"tool": "Unload_B_Output", "args": {"part": "screen"}})
-
-    def test_rule_plans_car_frame_to_output(self):
-        agent = ProductionAgent(llm_client=DisabledLLMClient())
-        plan = agent.run("把汽车产线中的车架送到输出区")
-
-        self.assertEqual(plan["plan_name"], "move_a_car_frame_to_output")
-        self.assertEqual(plan["steps"][0],
-                         {"tool": "Load_A_Pick", "args": {"part": "car_frame"}})
-        self.assertEqual(plan["steps"][-1],
-                         {"tool": "Unload_A_Output", "args": {"part": "car_frame"}})
-
-    def test_rule_plans_one_car_production(self):
-        agent = ProductionAgent(llm_client=DisabledLLMClient())
-        plan = agent.run("生产一辆车")
-
-        self.assertEqual(plan["plan_name"], "produce_1_car")
-        self.assertEqual(plan["steps"], CAR_PLAN["steps"])
-
-    def test_rule_plans_one_phone_production(self):
-        agent = ProductionAgent(llm_client=DisabledLLMClient())
-        plan = agent.run("生产一部手机")
-
-        self.assertEqual(plan["plan_name"], "produce_1_phone")
-        self.assertEqual(plan["steps"], PHONE_PLAN["steps"])
-
-    def test_rule_plans_mixed_product_quantities(self):
-        agent = ProductionAgent(llm_client=DisabledLLMClient())
-        plan = agent.run("生产车一辆手机两部")
-        tools = [step["tool"] for step in plan["steps"]]
-
-        self.assertEqual(plan["plan_name"], "produce_1_car_2_phone")
-        self.assertEqual(tools.count("Unload_A_Output"), 1)
-        self.assertEqual(tools.count("Unload_B_Output"), 2)
-        first_phone_unload = tools.index("Unload_B_Output")
-        self.assertEqual(tools[first_phone_unload + 1], "Transport_B_Output_Pick")
-
-    def test_rule_interleaves_simultaneous_car_and_phone_start(self):
-        agent = ProductionAgent(llm_client=DisabledLLMClient())
-        plan = agent.run(
-            "\u540c\u65f6\u542f\u52a8\u751f\u4ea7\u4e00\u90e8"
-            "\u624b\u673a\u548c\u4e00\u8f86\u6c7d\u8f66"
-        )
-        tools = [step["tool"] for step in plan["steps"]]
-
-        self.assertEqual(plan["plan_name"], "parallel_start_1_car_1_phone")
-        self.assertIn("Load_A_Pick", tools[:4])
-        self.assertIn("Load_B_Pick", tools[:4])
-        self.assertLess(tools.index("Load_A_Pick"), tools.index("Unload_B_Output"))
-        self.assertLess(tools.index("Load_B_Pick"), tools.index("Unload_A_Output"))
+        with self.assertRaisesRegex(PlanValidationError, "LLM is not configured"):
+            agent.run("produce one phone")
 
     def test_agent_retries_invalid_sequence_plan(self):
         bad_plan = {
@@ -343,17 +273,6 @@ class PlannerTests(unittest.TestCase):
         first_unload = tools.index("Unload_B_Output")
         self.assertEqual(tools[first_unload + 1], "Transport_B_Output_Pick")
         self.assertEqual(tools[first_unload + 2], "Load_B_Pick")
-
-    def test_rule_expands_two_phones_into_reset_action(self):
-        process_plan = rule_process_plan_from_prompt(
-            "\u8fde\u7eed\u751f\u4ea7\u4e24\u90e8\u624b\u673a"
-        )
-
-        self.assertEqual(process_plan["actions"], [
-            {"action": "produce_phone"},
-            {"action": "reset_status", "line": "B"},
-            {"action": "produce_phone"},
-        ])
 
     def test_operations_require_explicit_reset_between_same_line_runs(self):
         repeated_without_reset = {
@@ -503,12 +422,12 @@ class ToolExecutorStateTests(unittest.TestCase):
         self.assertEqual(singles, [])
         self.assertEqual(report["steps"][0]["message"], "completed in parallel")
 
-    def test_execute_tool_plan_batches_independent_arm_tools(self):
+    def test_execute_tool_plan_keeps_arm_tools_serial_for_zmq_safety(self):
         controller = FactoryController.__new__(FactoryController)
         calls = []
         controller._execute_tool = lambda tool, args: calls.append((tool, args))
         report = controller.execute_tool_plan({
-            "plan_name": "parallel_arms",
+            "plan_name": "serial_arms",
             "steps": [
                 {"tool": "Hold_A2_Assemble", "args": {"part": "car_frame"}},
                 {"tool": "Hold_B2_Assemble", "args": {"part": "screen"}},
@@ -516,11 +435,12 @@ class ToolExecutorStateTests(unittest.TestCase):
         })
 
         self.assertTrue(report["ok"])
-        self.assertEqual(set(tool for tool, _args in calls), {
-            "Hold_A2_Assemble",
-            "Hold_B2_Assemble",
-        })
-        self.assertEqual(report["steps"][0]["message"], "completed in parallel")
+        self.assertEqual(calls, [
+            ("Hold_A2_Assemble", {"part": "car_frame"}),
+            ("Hold_B2_Assemble", {"part": "screen"}),
+        ])
+        self.assertEqual(len(report["steps"]), 2)
+        self.assertNotIn("parallel", report["steps"][0]["message"])
 
     def test_parallel_transport_spacing_failure_falls_back_to_serial(self):
         controller = FactoryController.__new__(FactoryController)
