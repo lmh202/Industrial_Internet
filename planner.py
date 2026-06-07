@@ -22,6 +22,8 @@ from validator import PlanValidationError
 SYSTEM_PROMPT = """
 Return one compact JSON object only.
 You are Top Planner. Convert the user request to high-level actions, not tools.
+Infer the user's intent directly; there is no deterministic natural-language
+pre-parser before this planner.
 Schema:
 {"plan_name":"short_snake_case","strategy":"sequential|parallel_start","actions":[]}
 Allowed actions:

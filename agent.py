@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 from planner import ProductionAgent, ProductionPlanner, SYSTEM_PROMPT
-from rules import DEFAULT_LINE_PART, LINE_PARTS, PART_ALIASES, rule_plan_from_prompt
+from process_compiler import DEFAULT_LINE_PART, LINE_PARTS
 from tool_registry import (
     ALLOWED_TOOLS,
     CROSS_LINE_TOOLS,
@@ -40,7 +40,6 @@ __all__ = [
     "INSPECT_TOOLS",
     "LINE_PARTS",
     "LOAD_TOOLS",
-    "PART_ALIASES",
     "PLACE_TOOLS",
     "PLAN_TRANSPORT_ROUTES",
     "PlanValidationError",
@@ -54,7 +53,6 @@ __all__ = [
     "TaskParseError",
     "UNLOAD_TOOLS",
     "plan_to_json",
-    "rule_plan_from_prompt",
     "tasks_to_json",
     "validate_plan",
     "validate_plan_sequence",

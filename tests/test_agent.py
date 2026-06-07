@@ -11,7 +11,6 @@ from agent import (
 from collision_manager import CollisionManager
 from factory_controller import FactoryController, ProductionStepError
 from process_compiler import compile_process_plan, validate_process_plan
-from rules import rule_plan_from_prompt
 from scene_config import (
     LINE_B_CENTER_X,
     SHUTTLE_SAFE_MARGIN,
@@ -282,9 +281,12 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(plan["steps"][-1]["tool"], "Unload_B_Output")
         self.assertEqual(llm.calls, 3)
 
-    def test_rule_plans_unspecified_phone_part_to_output(self):
-        plan = rule_plan_from_prompt("把手机产线中的某个零件移到output中")
-        self.assertIsNotNone(plan)
+    def test_compiler_defaults_unspecified_phone_part_to_output(self):
+        plan = compile_process_plan({
+            "plan_name": "move_b_phone_base_to_output",
+            "strategy": "sequential",
+            "actions": [{"action": "move_to_output", "line": "B"}],
+        })
         tools = [step["tool"] for step in plan["steps"]]
 
         self.assertEqual(plan["plan_name"], "move_b_phone_base_to_output")
@@ -297,9 +299,14 @@ class PlannerTests(unittest.TestCase):
         ])
         self.assertEqual(plan["steps"][0]["args"]["part"], "phone_base")
 
-    def test_rule_plans_phone_screen_to_output_with_aux_shuttle(self):
-        plan = rule_plan_from_prompt("把手机产线中的屏幕移到output中")
-        self.assertIsNotNone(plan)
+    def test_compiler_moves_phone_screen_to_output_with_aux_shuttle(self):
+        plan = compile_process_plan({
+            "plan_name": "move_b_screen_to_output",
+            "strategy": "sequential",
+            "actions": [
+                {"action": "move_to_output", "line": "B", "part": "screen"},
+            ],
+        })
         tools = [step["tool"] for step in plan["steps"]]
 
         self.assertEqual(plan["plan_name"], "move_b_screen_to_output")
@@ -308,9 +315,14 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(plan["steps"][-1],
                          {"tool": "Unload_B_Output", "args": {"part": "screen"}})
 
-    def test_rule_plans_car_frame_to_output(self):
-        plan = rule_plan_from_prompt("把汽车产线中的车架送到输出区")
-        self.assertIsNotNone(plan)
+    def test_compiler_moves_car_frame_to_output(self):
+        plan = compile_process_plan({
+            "plan_name": "move_a_car_frame_to_output",
+            "strategy": "sequential",
+            "actions": [
+                {"action": "move_to_output", "line": "A", "part": "car_frame"},
+            ],
+        })
 
         self.assertEqual(plan["plan_name"], "move_a_car_frame_to_output")
         self.assertEqual(plan["steps"][0],
@@ -318,23 +330,27 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(plan["steps"][-1],
                          {"tool": "Unload_A_Output", "args": {"part": "car_frame"}})
 
-    def test_rule_plans_one_car_production(self):
-        plan = rule_plan_from_prompt("生产一辆车")
-        self.assertIsNotNone(plan)
+    def test_compiler_plans_one_car_production(self):
+        plan = compile_process_plan(CAR_PROCESS_PLAN)
 
-        self.assertEqual(plan["plan_name"], "produce_1_car")
+        self.assertEqual(plan["plan_name"], "one_car")
         self.assertEqual(plan["steps"], CAR_PLAN["steps"])
 
-    def test_rule_plans_one_phone_production(self):
-        plan = rule_plan_from_prompt("生产一部手机")
-        self.assertIsNotNone(plan)
+    def test_compiler_plans_one_phone_production(self):
+        plan = compile_process_plan(PHONE_PROCESS_PLAN)
 
-        self.assertEqual(plan["plan_name"], "produce_1_phone")
+        self.assertEqual(plan["plan_name"], "one_phone")
         self.assertEqual(plan["steps"], PHONE_PLAN["steps"])
 
-    def test_rule_plans_mixed_product_quantities(self):
-        plan = rule_plan_from_prompt("生产车一辆手机两部")
-        self.assertIsNotNone(plan)
+    def test_compiler_plans_mixed_product_quantities(self):
+        plan = compile_process_plan({
+            "plan_name": "produce_1_car_2_phone",
+            "strategy": "sequential",
+            "jobs": [
+                {"action": "produce", "product": "car", "quantity": 1},
+                {"action": "produce", "product": "phone", "quantity": 2},
+            ],
+        })
         tools = [step["tool"] for step in plan["steps"]]
 
         self.assertEqual(plan["plan_name"], "produce_1_car_2_phone")
@@ -343,12 +359,15 @@ class PlannerTests(unittest.TestCase):
         first_phone_unload = tools.index("Unload_B_Output")
         self.assertEqual(tools[first_phone_unload + 1], "Transport_B_Output_Pick")
 
-    def test_rule_interleaves_simultaneous_car_and_phone_start(self):
-        plan = rule_plan_from_prompt(
-            "\u540c\u65f6\u542f\u52a8\u751f\u4ea7\u4e00\u90e8"
-            "\u624b\u673a\u548c\u4e00\u8f86\u6c7d\u8f66"
-        )
-        self.assertIsNotNone(plan)
+    def test_compiler_interleaves_simultaneous_car_and_phone_start(self):
+        plan = compile_process_plan({
+            "plan_name": "parallel_start_1_car_1_phone",
+            "strategy": "parallel_start",
+            "actions": [
+                {"action": "produce_phone"},
+                {"action": "produce_car"},
+            ],
+        })
         tools = [step["tool"] for step in plan["steps"]]
 
         self.assertEqual(plan["plan_name"], "parallel_start_1_car_1_phone")

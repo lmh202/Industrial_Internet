@@ -285,9 +285,10 @@ The planning stack is split into formal Agent layers:
 
 - `tool_registry.py`: the single tool whitelist and metadata source, including
   routes, argument schemas, executor names, and prompt descriptions.
-- `rules.py`: deterministic parsing for common commands that should not depend
-  on the local model, such as moving a specific line part to `output`.
-- `planner.py`: local-model planner with validation-first retries.
+- `planner.py`: local-model Top Planner and Operation Agent with
+  validation-first retries.
+- `process_compiler.py`: deterministic compiler from validated process
+  actions/operations into executable tool calls.
 - `validator.py` and `state.py`: JSON shape validation plus abstract station,
   part, and holding-state simulation before CoppeliaSim execution.
 - `factory_controller.py`: registered tool executor that returns a structured
