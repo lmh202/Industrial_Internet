@@ -1,0 +1,19 @@
+{
+  "plan_name": "make_phone_reset_b_make_phone_make_car",
+  "strategy": "sequential",
+  "actions": [
+    {
+      "action": "produce_phone"
+    },
+    {
+      "action": "reset_status",
+      "line": "B"
+    },
+    {
+      "action": "produce_phone"
+    },
+    {
+      "action": "produce_car"
+    }
+  ]
+}

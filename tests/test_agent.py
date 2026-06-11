@@ -601,7 +601,7 @@ class ToolExecutorStateTests(unittest.TestCase):
         self.assertEqual(singles, [])
         self.assertEqual(report["steps"][0]["message"], "completed in parallel")
 
-    def test_execute_tool_plan_batches_independent_arm_tools(self):
+    def test_execute_tool_plan_serializes_independent_arm_tools(self):
         controller = FactoryController.__new__(FactoryController)
         calls = []
         controller._execute_tool = lambda tool, args: calls.append((tool, args))
@@ -614,11 +614,11 @@ class ToolExecutorStateTests(unittest.TestCase):
         })
 
         self.assertTrue(report["ok"])
-        self.assertEqual(set(tool for tool, _args in calls), {
-            "Hold_A2_Assemble",
-            "Hold_B2_Assemble",
-        })
-        self.assertEqual(report["steps"][0]["message"], "completed in parallel")
+        self.assertEqual(calls, [
+            ("Hold_A2_Assemble", {"part": "car_frame"}),
+            ("Hold_B2_Assemble", {"part": "screen"}),
+        ])
+        self.assertEqual(report["steps"][0]["message"], "completed")
 
     def test_parallel_transport_spacing_failure_falls_back_to_serial(self):
         controller = FactoryController.__new__(FactoryController)

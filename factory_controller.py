@@ -283,6 +283,8 @@ class FactoryController:
             return False
         if "cross_line" in {first_spec.category, second_spec.category}:
             return False
+        if first_spec.category != "transport" or second_spec.category != "transport":
+            return False
         first_family = self._tool_family(first_spec)
         second_family = self._tool_family(second_spec)
         if first_family is None or second_family is None:

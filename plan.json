@@ -1,5 +1,5 @@
 {
-  "plan_name": "produce_2_phone",
+  "plan_name": "make_phone_reset_b_make_phone_make_car",
   "steps": [
     {
       "tool": "Load_B_Pick",
@@ -220,6 +220,76 @@
       "args": {
         "part": "phone_base"
       }
+    },
+    {
+      "tool": "Load_A_Pick",
+      "args": {
+        "part": "car_base"
+      }
+    },
+    {
+      "tool": "Transport_A_Pick_Assemble",
+      "args": {}
+    },
+    {
+      "tool": "Transport_A_Assemble_Forward",
+      "args": {}
+    },
+    {
+      "tool": "Transport_A2_Clear_Pick",
+      "args": {}
+    },
+    {
+      "tool": "Load_A2_Pick",
+      "args": {
+        "part": "car_frame"
+      }
+    },
+    {
+      "tool": "Transport_A2_Pick_Assemble",
+      "args": {}
+    },
+    {
+      "tool": "Hold_A2_Assemble",
+      "args": {
+        "part": "car_frame"
+      }
+    },
+    {
+      "tool": "Transport_A2_Assemble_Clear",
+      "args": {}
+    },
+    {
+      "tool": "Transport_A_Forward_Assemble",
+      "args": {}
+    },
+    {
+      "tool": "Place_A_Assemble",
+      "args": {
+        "part": "car_frame",
+        "attach_to": "car_base",
+        "layer": 1
+      }
+    },
+    {
+      "tool": "Transport_A_Assemble_Camera",
+      "args": {}
+    },
+    {
+      "tool": "Inspect_A",
+      "args": {}
+    },
+    {
+      "tool": "Transport_A_Camera_Output",
+      "args": {}
+    },
+    {
+      "tool": "Unload_A_Output",
+      "args": {
+        "part": "car_base"
+      }
     }
-  ]
+  ],
+  "planning_source": "top_planner_operation_agent_compiler",
+  "planning_attempts": 1
 }
