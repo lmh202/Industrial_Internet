@@ -1,0 +1,255 @@
+{
+  "model": "qwen3:latest",
+  "mode": "optimized",
+  "results": [
+    {
+      "prompt": "连续生产两部手机和一辆汽车",
+      "architecture": "two_layer_agent",
+      "ok": true,
+      "elapsed_s": 97.1883256000001,
+      "llm_calls": 3,
+      "llm_elapsed_s": 97.18718470000749,
+      "tool_steps": 52,
+      "top_actions": 6,
+      "operations": 17,
+      "unique_actions": 4,
+      "plan_chars": 3288,
+      "planning_source": "top_planner_operation_agent_compiler",
+      "error": "",
+      "calls": [
+        {
+          "index": 1,
+          "role": "top_planner",
+          "max_tokens": 256,
+          "elapsed_s": 13.795310100002098,
+          "ok": true,
+          "system_chars": 2258,
+          "user_chars": 13,
+          "output_chars": 286,
+          "error": ""
+        },
+        {
+          "index": 2,
+          "role": "operation_agent",
+          "max_tokens": 512,
+          "elapsed_s": 47.99283320000541,
+          "ok": true,
+          "system_chars": 4122,
+          "user_chars": 219,
+          "output_chars": 509,
+          "error": ""
+        },
+        {
+          "index": 3,
+          "role": "operation_agent",
+          "max_tokens": 512,
+          "elapsed_s": 35.39904139999999,
+          "ok": true,
+          "system_chars": 4122,
+          "user_chars": 215,
+          "output_chars": 373,
+          "error": ""
+        }
+      ]
+    },
+    {
+      "prompt": "按顺序生产三部手机和两辆汽车",
+      "architecture": "two_layer_agent",
+      "ok": true,
+      "elapsed_s": 103.65751610000007,
+      "llm_calls": 3,
+      "llm_elapsed_s": 103.65609699999914,
+      "tool_steps": 86,
+      "top_actions": 10,
+      "operations": 28,
+      "unique_actions": 4,
+      "plan_chars": 5312,
+      "planning_source": "top_planner_operation_agent_compiler",
+      "error": "",
+      "calls": [
+        {
+          "index": 1,
+          "role": "top_planner",
+          "max_tokens": 256,
+          "elapsed_s": 21.250010600000678,
+          "ok": true,
+          "system_chars": 2258,
+          "user_chars": 14,
+          "output_chars": 425,
+          "error": ""
+        },
+        {
+          "index": 2,
+          "role": "operation_agent",
+          "max_tokens": 512,
+          "elapsed_s": 46.89027609999903,
+          "ok": true,
+          "system_chars": 4122,
+          "user_chars": 220,
+          "output_chars": 510,
+          "error": ""
+        },
+        {
+          "index": 3,
+          "role": "operation_agent",
+          "max_tokens": 512,
+          "elapsed_s": 35.51581029999943,
+          "ok": true,
+          "system_chars": 4122,
+          "user_chars": 216,
+          "output_chars": 374,
+          "error": ""
+        }
+      ]
+    },
+    {
+      "prompt": "先同时启动生产一部手机和一辆汽车，完成后再生产一部手机和一辆汽车",
+      "architecture": "two_layer_agent",
+      "ok": true,
+      "elapsed_s": 180.836080699999,
+      "llm_calls": 4,
+      "llm_elapsed_s": 180.83483239999623,
+      "tool_steps": 68,
+      "top_actions": 8,
+      "operations": 22,
+      "unique_actions": 4,
+      "plan_chars": 4212,
+      "planning_source": "top_planner_operation_agent_compiler",
+      "error": "",
+      "calls": [
+        {
+          "index": 1,
+          "role": "top_planner",
+          "max_tokens": 256,
+          "elapsed_s": 20.74544969999988,
+          "ok": true,
+          "system_chars": 2258,
+          "user_chars": 32,
+          "output_chars": 387,
+          "error": ""
+        },
+        {
+          "index": 2,
+          "role": "operation_agent",
+          "max_tokens": 512,
+          "elapsed_s": 73.360697600001,
+          "ok": true,
+          "system_chars": 4122,
+          "user_chars": 252,
+          "output_chars": 822,
+          "error": ""
+        },
+        {
+          "index": 3,
+          "role": "operation_agent",
+          "max_tokens": 512,
+          "elapsed_s": 48.95013990000007,
+          "ok": true,
+          "system_chars": 4122,
+          "user_chars": 342,
+          "output_chars": 542,
+          "error": ""
+        },
+        {
+          "index": 4,
+          "role": "operation_agent",
+          "max_tokens": 512,
+          "elapsed_s": 37.77854519999528,
+          "ok": true,
+          "system_chars": 4122,
+          "user_chars": 248,
+          "output_chars": 406,
+          "error": ""
+        }
+      ]
+    },
+    {
+      "prompt": "连续生产两部手机、两辆汽车，并把B线的屏幕移动到output",
+      "architecture": "two_layer_agent",
+      "ok": true,
+      "elapsed_s": 103.6669849999962,
+      "llm_calls": 3,
+      "llm_elapsed_s": 103.66598360000353,
+      "tool_steps": 74,
+      "top_actions": 10,
+      "operations": 24,
+      "unique_actions": 5,
+      "plan_chars": 4517,
+      "planning_source": "top_planner_operation_agent_compiler",
+      "error": "",
+      "calls": [
+        {
+          "index": 1,
+          "role": "top_planner",
+          "max_tokens": 256,
+          "elapsed_s": 25.513360500001,
+          "ok": true,
+          "system_chars": 2258,
+          "user_chars": 30,
+          "output_chars": 480,
+          "error": ""
+        },
+        {
+          "index": 2,
+          "role": "operation_agent",
+          "max_tokens": 512,
+          "elapsed_s": 48.16361680000409,
+          "ok": true,
+          "system_chars": 4122,
+          "user_chars": 243,
+          "output_chars": 533,
+          "error": ""
+        },
+        {
+          "index": 3,
+          "role": "operation_agent",
+          "max_tokens": 512,
+          "elapsed_s": 29.989006299998437,
+          "ok": true,
+          "system_chars": 4122,
+          "user_chars": 239,
+          "output_chars": 397,
+          "error": ""
+        }
+      ]
+    }
+  ],
+  "oracle": {
+    "连续生产两部手机和一辆汽车": {
+      "top_actions": 6,
+      "unique_actions": 4,
+      "operations": 17,
+      "tool_steps": 52,
+      "top_json_chars": 285,
+      "operation_json_chars": 1299,
+      "tool_json_chars": 3204
+    },
+    "按顺序生产三部手机和两辆汽车": {
+      "top_actions": 10,
+      "unique_actions": 4,
+      "operations": 28,
+      "tool_steps": 86,
+      "top_json_chars": 423,
+      "operation_json_chars": 2067,
+      "tool_json_chars": 5227
+    },
+    "先同时启动生产一部手机和一辆汽车，完成后再生产一部手机和一辆汽车": {
+      "top_actions": 4,
+      "unique_actions": 4,
+      "operations": 11,
+      "tool_steps": 34,
+      "top_json_chars": 226,
+      "operation_json_chars": 859,
+      "tool_json_chars": 2079
+    },
+    "连续生产两部手机、两辆汽车，并把B线的屏幕移动到output": {
+      "top_actions": 8,
+      "unique_actions": 4,
+      "operations": 22,
+      "tool_steps": 68,
+      "top_json_chars": 353,
+      "operation_json_chars": 1616,
+      "tool_json_chars": 4095
+    }
+  }
+}

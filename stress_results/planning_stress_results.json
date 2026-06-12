@@ -1,0 +1,182 @@
+{
+  "model": "qwen3:latest",
+  "mode": "both",
+  "results": [
+    {
+      "prompt": "连续生产两部手机和一辆汽车",
+      "architecture": "two_layer_agent",
+      "ok": true,
+      "elapsed_s": 204.9092004999984,
+      "llm_calls": 3,
+      "llm_elapsed_s": 204.90794769999775,
+      "tool_steps": 52,
+      "top_actions": 6,
+      "operations": 17,
+      "unique_actions": 4,
+      "plan_chars": 3288,
+      "planning_source": "top_planner_operation_agent_compiler",
+      "error": "",
+      "calls": [
+        {
+          "index": 1,
+          "role": "top_planner",
+          "max_tokens": 256,
+          "elapsed_s": 64.16310559999692,
+          "ok": true,
+          "system_chars": 2258,
+          "user_chars": 13,
+          "output_chars": 286,
+          "error": ""
+        },
+        {
+          "index": 2,
+          "role": "operation_agent",
+          "max_tokens": 512,
+          "elapsed_s": 105.27132729999721,
+          "ok": true,
+          "system_chars": 4122,
+          "user_chars": 219,
+          "output_chars": 509,
+          "error": ""
+        },
+        {
+          "index": 3,
+          "role": "operation_agent",
+          "max_tokens": 512,
+          "elapsed_s": 35.47351480000361,
+          "ok": true,
+          "system_chars": 4122,
+          "user_chars": 215,
+          "output_chars": 373,
+          "error": ""
+        }
+      ]
+    },
+    {
+      "prompt": "连续生产两部手机和一辆汽车",
+      "architecture": "direct_tool_json",
+      "ok": false,
+      "elapsed_s": 282.8460286000045,
+      "llm_calls": 1,
+      "llm_elapsed_s": 282.8457755999989,
+      "tool_steps": 0,
+      "top_actions": 0,
+      "operations": 0,
+      "unique_actions": 0,
+      "plan_chars": 2592,
+      "planning_source": "",
+      "error": "Step 10 layer must be numeric.",
+      "calls": [
+        {
+          "index": 1,
+          "role": "direct_tool_planner",
+          "max_tokens": 8192,
+          "elapsed_s": 282.8457755999989,
+          "ok": true,
+          "system_chars": 5191,
+          "user_chars": 13,
+          "output_chars": 2592,
+          "error": ""
+        }
+      ]
+    },
+    {
+      "prompt": "按顺序生产三部手机和两辆汽车",
+      "architecture": "two_layer_agent",
+      "ok": true,
+      "elapsed_s": 114.51703869999619,
+      "llm_calls": 3,
+      "llm_elapsed_s": 114.51538010000513,
+      "tool_steps": 86,
+      "top_actions": 10,
+      "operations": 28,
+      "unique_actions": 4,
+      "plan_chars": 5312,
+      "planning_source": "top_planner_operation_agent_compiler",
+      "error": "",
+      "calls": [
+        {
+          "index": 1,
+          "role": "top_planner",
+          "max_tokens": 256,
+          "elapsed_s": 21.640163299998676,
+          "ok": true,
+          "system_chars": 2258,
+          "user_chars": 14,
+          "output_chars": 425,
+          "error": ""
+        },
+        {
+          "index": 2,
+          "role": "operation_agent",
+          "max_tokens": 512,
+          "elapsed_s": 49.527982200001134,
+          "ok": true,
+          "system_chars": 4122,
+          "user_chars": 220,
+          "output_chars": 510,
+          "error": ""
+        },
+        {
+          "index": 3,
+          "role": "operation_agent",
+          "max_tokens": 512,
+          "elapsed_s": 43.34723460000532,
+          "ok": true,
+          "system_chars": 4122,
+          "user_chars": 216,
+          "output_chars": 374,
+          "error": ""
+        }
+      ]
+    },
+    {
+      "prompt": "按顺序生产三部手机和两辆汽车",
+      "architecture": "direct_tool_json",
+      "ok": false,
+      "elapsed_s": 366.23207739999634,
+      "llm_calls": 1,
+      "llm_elapsed_s": 366.231758599999,
+      "tool_steps": 0,
+      "top_actions": 0,
+      "operations": 0,
+      "unique_actions": 0,
+      "plan_chars": 4446,
+      "planning_source": "",
+      "error": "Step 10 layer must be numeric.",
+      "calls": [
+        {
+          "index": 1,
+          "role": "direct_tool_planner",
+          "max_tokens": 8192,
+          "elapsed_s": 366.231758599999,
+          "ok": true,
+          "system_chars": 5191,
+          "user_chars": 14,
+          "output_chars": 4446,
+          "error": ""
+        }
+      ]
+    }
+  ],
+  "oracle": {
+    "连续生产两部手机和一辆汽车": {
+      "top_actions": 6,
+      "unique_actions": 4,
+      "operations": 17,
+      "tool_steps": 52,
+      "top_json_chars": 285,
+      "operation_json_chars": 1299,
+      "tool_json_chars": 3204
+    },
+    "按顺序生产三部手机和两辆汽车": {
+      "top_actions": 10,
+      "unique_actions": 4,
+      "operations": 28,
+      "tool_steps": 86,
+      "top_json_chars": 423,
+      "operation_json_chars": 2067,
+      "tool_json_chars": 5227
+    }
+  }
+}
