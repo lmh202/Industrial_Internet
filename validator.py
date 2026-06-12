@@ -78,13 +78,17 @@ def _validate_tool_args(index: int, tool: str, args: dict[str, Any]) -> dict[str
     if tool in LOAD_TOOLS:
         _reject_unknown_args(index, tool, args, {"part", "local_offset"})
         part = _required_part(index, args)
+        if tool == "Load_A_Pick" and part not in {"car_base", "phone_base"}:
+            raise PlanValidationError(
+                f"Step {index} Load_A_Pick can only load car_base or phone_base, not {part}."
+            )
         if tool == "Load_A2_Pick" and part != "car_frame":
             raise PlanValidationError(
                 f"Step {index} Load_A2_Pick can only load car_frame, not {part}."
             )
-        if tool == "Load_B_Pick" and part == "screen":
+        if tool == "Load_B_Pick" and part not in {"car_frame", "screen", "camera_module"}:
             raise PlanValidationError(
-                f"Step {index} Load_B_Pick cannot load screen; use Load_B2_Pick(screen)."
+                f"Step {index} Load_B_Pick can only load car_frame, screen, or camera_module, not {part}."
             )
         if tool == "Load_B2_Pick" and part not in {"screen", "camera_module"}:
             raise PlanValidationError(

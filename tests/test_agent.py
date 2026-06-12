@@ -1,4 +1,7 @@
+import threading
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -9,8 +12,10 @@ from agent import (
     validate_plan_sequence,
 )
 from collision_manager import CollisionManager
-from factory_controller import FactoryController, ProductionStepError
+from factory_controller import FactoryController, ProductionStepError, ThreadSafeSimProxy
+from llm_client import LLMError
 from process_compiler import compile_process_plan, validate_process_plan
+from rules import parse_operation_plan
 from scene_config import (
     LINE_B_CENTER_X,
     SHUTTLE_SAFE_MARGIN,
@@ -25,15 +30,16 @@ import main
 CAR_PLAN = {
     "plan_name": "one_car",
     "steps": [
-        {"tool": "Load_A_Pick", "args": {"part": "car_base"}},
-        {"tool": "Transport_A_Pick_Assemble", "args": {}},
-        {"tool": "Transport_A_Assemble_Forward", "args": {}},
-        {"tool": "Transport_A2_Clear_Pick", "args": {}},
-        {"tool": "Load_A2_Pick", "args": {"part": "car_frame"}},
-        {"tool": "Transport_A2_Pick_Assemble", "args": {}},
+        {"tool": "Load_B_Pick", "args": {"part": "car_frame"}},
+        {"tool": "Transport_B_Pick_Assemble", "args": {}},
+        {"tool": "Transport_A2_Clear_Transfer", "args": {}},
+        {"tool": "Transport_B_A2", "args": {"part": "car_frame"}},
+        {"tool": "Transport_B_Transfer_Pick", "args": {}},
+        {"tool": "Transport_A2_Transfer_Assemble", "args": {}},
         {"tool": "Hold_A2_Assemble", "args": {"part": "car_frame"}},
         {"tool": "Transport_A2_Assemble_Clear", "args": {}},
-        {"tool": "Transport_A_Forward_Assemble", "args": {}},
+        {"tool": "Load_A_Pick", "args": {"part": "car_base"}},
+        {"tool": "Transport_A_Pick_Assemble", "args": {}},
         {
             "tool": "Place_A_Assemble",
             "args": {"part": "car_frame", "attach_to": "car_base", "layer": 1},
@@ -42,66 +48,70 @@ CAR_PLAN = {
         {"tool": "Inspect_A", "args": {}},
         {"tool": "Transport_A_Camera_Output", "args": {}},
         {"tool": "Unload_A_Output", "args": {"part": "car_base"}},
+        {"tool": "Transport_A_Output_Pick", "args": {}},
     ],
 }
 
 PHONE_PLAN = {
     "plan_name": "one_phone",
     "steps": [
-        {"tool": "Load_B_Pick", "args": {"part": "phone_base"}},
-        {"tool": "Transport_B_Pick_Assemble", "args": {}},
-        {"tool": "Transport_B_Assemble_Forward", "args": {}},
+        {"tool": "Load_A_Pick", "args": {"part": "phone_base"}},
+        {"tool": "Transport_A_B_Transfer", "args": {"part": "phone_base"}},
+        {"tool": "Transport_A_Transfer_Pick", "args": {}},
+        {"tool": "Transport_B_Transfer_Forward", "args": {}},
         {"tool": "Transport_B2_Clear_Pick", "args": {}},
-        {"tool": "Load_B2_Pick", "args": {"part": "screen"}},
-        {"tool": "Transport_B2_Pick_Assemble", "args": {}},
-        {"tool": "Hold_B2_Assemble", "args": {"part": "screen"}},
-        {"tool": "Transport_B2_Assemble_Clear", "args": {}},
-        {"tool": "Transport_B_Forward_Assemble", "args": {}},
         {
-            "tool": "Place_B_Assemble",
-            "args": {"part": "screen", "attach_to": "phone_base", "layer": 1},
+            "tool": "Load_B2_Pick",
+            "args": {"part": "camera_module", "local_offset": [-0.035, 0.0]},
         },
-        {"tool": "Transport_B_Assemble_Forward", "args": {}},
-        {"tool": "Transport_B2_Clear_Pick", "args": {}},
-        {"tool": "Load_B2_Pick", "args": {"part": "camera_module"}},
+        {
+            "tool": "Load_B2_Pick",
+            "args": {"part": "screen", "local_offset": [0.035, 0.0]},
+        },
         {"tool": "Transport_B2_Pick_Assemble", "args": {}},
         {"tool": "Hold_B2_Assemble", "args": {"part": "camera_module"}},
-        {"tool": "Transport_B2_Assemble_Clear", "args": {}},
-        {"tool": "Transport_B_Forward_Assemble", "args": {}},
         {
             "tool": "Place_B_Assemble",
-            "args": {"part": "camera_module", "attach_to": "phone_base", "layer": 2},
+            "args": {"part": "camera_module", "attach_to": "phone_base", "layer": 1},
         },
-        {"tool": "Transport_B_Assemble_Camera", "args": {}},
+        {"tool": "Hold_B2_Assemble", "args": {"part": "screen"}},
+        {
+            "tool": "Place_B_Assemble",
+            "args": {"part": "screen", "attach_to": "phone_base", "layer": 2},
+        },
+        {"tool": "Transport_B2_Assemble_Clear", "args": {}},
+        {"tool": "Transport_B_Forward_Camera", "args": {}},
         {"tool": "Inspect_B", "args": {}},
         {"tool": "Transport_B_Camera_Output", "args": {}},
         {"tool": "Unload_B_Output", "args": {"part": "phone_base"}},
+        {"tool": "Transport_B_Output_Pick", "args": {}},
     ],
 }
 
 CAR_PROCESS_PLAN = {
     "plan_name": "one_car",
     "strategy": "sequential",
-    "actions": [{"action": "produce_car"}],
+    "actions": [{"action": "produce_car"}, {"action": "reset_status", "line": "A"}],
 }
 
 PHONE_PROCESS_PLAN = {
     "plan_name": "one_phone",
     "strategy": "sequential",
-    "actions": [{"action": "produce_phone"}],
+    "actions": [{"action": "produce_phone"}, {"action": "reset_status", "line": "B"}],
 }
 
 CAR_OPERATION_PLAN = {
     "plan_name": "one_car",
     "strategy": "sequential",
     "operations": [
-        {"op": "load_base", "line": "A", "part": "car_base"},
+        {"op": "load_base", "line": "A", "source_line": "A", "part": "car_base"},
         {
             "op": "assemble",
             "line": "A",
+            "source_line": "B",
             "base": "car_base",
             "part": "car_frame",
-            "supplier": "A2",
+            "supplier": "B",
             "layer": 1,
         },
         {"op": "inspect", "line": "A"},
@@ -113,10 +123,11 @@ PHONE_OPERATION_PLAN = {
     "plan_name": "one_phone",
     "strategy": "sequential",
     "operations": [
-        {"op": "load_base", "line": "B", "part": "phone_base"},
+        {"op": "load_base", "line": "B", "source_line": "A", "part": "phone_base"},
         {
             "op": "assemble",
             "line": "B",
+            "source_line": "B",
             "base": "phone_base",
             "part": "screen",
             "supplier": "B2",
@@ -125,6 +136,7 @@ PHONE_OPERATION_PLAN = {
         {
             "op": "assemble",
             "line": "B",
+            "source_line": "B",
             "base": "phone_base",
             "part": "camera_module",
             "supplier": "B2",
@@ -139,15 +151,31 @@ PHONE_MOVE_PROCESS_PLAN = {
     "plan_name": "move_phone_part_to_output",
     "strategy": "sequential",
     "actions": [
-        {"action": "move_to_output", "line": "B", "part": "phone_base"},
+        {"action": "move_to_output", "line": "A", "part": "phone_base"},
+        {"action": "reset_status", "line": "A"},
     ],
+}
+
+CAR_OPERATION_PLAN_WITH_RESET = {
+    "plan_name": "one_car",
+    "strategy": "sequential",
+    "operations": CAR_OPERATION_PLAN["operations"]
+    + [{"op": "reset_status", "line": "A"}],
+}
+
+PHONE_OPERATION_PLAN_WITH_RESET = {
+    "plan_name": "one_phone",
+    "strategy": "sequential",
+    "operations": PHONE_OPERATION_PLAN["operations"]
+    + [{"op": "reset_status", "line": "B"}],
 }
 
 PHONE_MOVE_OPERATION_PLAN = {
     "plan_name": "move_phone_part_to_output",
     "strategy": "sequential",
     "operations": [
-        {"op": "move_to_output", "line": "B", "part": "phone_base"},
+        {"op": "move_to_output", "line": "A", "part": "phone_base"},
+        {"op": "reset_status", "line": "A"},
     ],
 }
 
@@ -173,6 +201,15 @@ class DisabledLLMClient:
     @property
     def is_configured(self):
         return False
+
+
+class FailingLLMClient:
+    @property
+    def is_configured(self):
+        return True
+
+    def chat_json(self, *_args, **_kwargs):
+        raise LLMError("timeout")
 
 
 class PlannerTests(unittest.TestCase):
@@ -201,10 +238,10 @@ class PlannerTests(unittest.TestCase):
             llm_client=FakeLLMClient([CAR_PROCESS_PLAN, CAR_OPERATION_PLAN]))
         plan = agent.run("生产一辆车")
 
-        self.assertEqual(plan["steps"][0]["tool"], "Load_A_Pick")
+        self.assertEqual(plan["steps"][0]["tool"], "Load_B_Pick")
         self.assertEqual(plan["planning_source"], "top_planner_operation_agent_compiler")
         self.assertEqual(agent.last_top_level_plan, CAR_PROCESS_PLAN)
-        self.assertEqual(agent.last_subagent_plan, CAR_OPERATION_PLAN)
+        self.assertEqual(agent.last_subagent_plan, CAR_OPERATION_PLAN_WITH_RESET)
 
     def test_agent_retries_invalid_top_plan(self):
         bad_plan = {
@@ -221,12 +258,28 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(plan["steps"], PHONE_PLAN["steps"])
         self.assertEqual(llm.calls, 3)
 
+    def test_agent_retries_top_plan_missing_reset_after_output_action(self):
+        bad_plan = {
+            "plan_name": "bad_phone",
+            "strategy": "sequential",
+            "actions": [{"action": "produce_phone"}],
+        }
+        llm = FakeLLMClient([bad_plan, PHONE_PROCESS_PLAN, PHONE_OPERATION_PLAN])
+        agent = ProductionAgent(llm_client=llm)
+
+        plan = agent.run("produce one phone")
+
+        self.assertEqual(plan["steps"], PHONE_PLAN["steps"])
+        self.assertEqual(llm.calls, 3)
+
     def test_agent_rejects_direct_operation_plan_from_top_planner(self):
         llm = FakeLLMClient(CAR_OPERATION_PLAN)
         agent = ProductionAgent(llm_client=llm)
 
-        with self.assertRaisesRegex(PlanValidationError, "high-level actions"):
-            agent.run("生产一辆车")
+        plan = agent.run("\u751f\u4ea7\u4e00\u8f86\u8f66")
+
+        self.assertEqual(plan["steps"], CAR_PLAN["steps"])
+        self.assertEqual(plan["planning_source"], "rules_fallback_compiler")
 
     def test_agent_requires_configured_llm(self):
         agent = ProductionAgent(llm_client=DisabledLLMClient())
@@ -237,8 +290,47 @@ class PlannerTests(unittest.TestCase):
     def test_agent_rejects_low_level_tool_plan_from_top_planner(self):
         agent = ProductionAgent(llm_client=FakeLLMClient(CAR_PLAN))
 
-        with self.assertRaises(PlanValidationError):
-            agent.run("生产一辆车")
+        plan = agent.run("\u751f\u4ea7\u4e00\u8f86\u8f66")
+
+        self.assertEqual(plan["steps"], CAR_PLAN["steps"])
+        self.assertEqual(plan["planning_source"], "rules_fallback_compiler")
+
+    def test_agent_falls_back_to_rules_when_llm_times_out(self):
+        agent = ProductionAgent(llm_client=FailingLLMClient())
+
+        plan = agent.run("\u751f\u4ea7\u4e00\u90e8\u624b\u673a")
+
+        self.assertEqual(plan["steps"], PHONE_PLAN["steps"])
+        self.assertEqual(plan["planning_source"], "rules_fallback_compiler")
+        self.assertEqual(
+            agent.last_subagent_plan["operations"],
+            PHONE_OPERATION_PLAN_WITH_RESET["operations"],
+        )
+
+    def test_rules_parse_two_phones_with_reset_operation(self):
+        process_plan = parse_operation_plan("\u8fde\u7eed\u751f\u4ea7\u4e24\u90e8\u624b\u673a")
+        operations = process_plan["operations"]
+
+        self.assertEqual(process_plan["strategy"], "sequential")
+        self.assertEqual(operations[0], PHONE_OPERATION_PLAN["operations"][0])
+        self.assertIn({"op": "reset_status", "line": "B"}, operations)
+        self.assertEqual(
+            sum(
+                1
+                for operation in operations
+                if operation == {"op": "unload", "line": "B", "part": "phone_base"}
+            ),
+            2,
+        )
+
+    def test_rules_parse_simultaneous_car_and_phone(self):
+        process_plan = parse_operation_plan(
+            "\u540c\u65f6\u751f\u4ea7\u4e00\u90e8\u624b\u673a\u548c\u4e00\u8f86\u6c7d\u8f66"
+        )
+
+        self.assertEqual(process_plan["strategy"], "parallel_start")
+        self.assertIn(CAR_OPERATION_PLAN["operations"][0], process_plan["operations"])
+        self.assertIn(PHONE_OPERATION_PLAN["operations"][0], process_plan["operations"])
 
     def test_agent_retries_top_plan_with_unrequested_move_to_output(self):
         bad_top_plan = {
@@ -277,9 +369,9 @@ class PlannerTests(unittest.TestCase):
                          "\u67d0\u4e2a\u96f6\u4ef6\u79fb\u5230output\u4e2d")
 
         self.assertEqual(plan["plan_name"], "move_phone_part_to_output")
-        self.assertEqual(plan["steps"][0]["tool"], "Load_B_Pick")
-        self.assertEqual(plan["steps"][-1]["tool"], "Unload_B_Output")
-        self.assertEqual(llm.calls, 3)
+        self.assertEqual(plan["steps"][0]["tool"], "Load_A_Pick")
+        self.assertEqual(plan["steps"][-1]["tool"], "Transport_A_Output_Pick")
+        self.assertEqual(llm.calls, 2)
 
     def test_compiler_defaults_unspecified_phone_part_to_output(self):
         plan = compile_process_plan({
@@ -297,7 +389,7 @@ class PlannerTests(unittest.TestCase):
             "Transport_B_Camera_Output",
             "Unload_B_Output",
         ])
-        self.assertEqual(plan["steps"][0]["args"]["part"], "phone_base")
+        self.assertEqual(plan["steps"][0]["args"]["part"], "car_frame")
 
     def test_compiler_moves_phone_screen_to_output_with_aux_shuttle(self):
         plan = compile_process_plan({
@@ -310,8 +402,7 @@ class PlannerTests(unittest.TestCase):
         tools = [step["tool"] for step in plan["steps"]]
 
         self.assertEqual(plan["plan_name"], "move_b_screen_to_output")
-        self.assertIn("Load_B2_Pick", tools)
-        self.assertIn("Hold_B2_Assemble", tools)
+        self.assertIn("Load_B_Pick", tools)
         self.assertEqual(plan["steps"][-1],
                          {"tool": "Unload_B_Output", "args": {"part": "screen"}})
 
@@ -320,15 +411,15 @@ class PlannerTests(unittest.TestCase):
             "plan_name": "move_a_car_frame_to_output",
             "strategy": "sequential",
             "actions": [
-                {"action": "move_to_output", "line": "A", "part": "car_frame"},
+                {"action": "move_to_output", "line": "B", "part": "car_frame"},
             ],
         })
 
         self.assertEqual(plan["plan_name"], "move_a_car_frame_to_output")
         self.assertEqual(plan["steps"][0],
-                         {"tool": "Load_A_Pick", "args": {"part": "car_frame"}})
+                         {"tool": "Load_B_Pick", "args": {"part": "car_frame"}})
         self.assertEqual(plan["steps"][-1],
-                         {"tool": "Unload_A_Output", "args": {"part": "car_frame"}})
+                         {"tool": "Unload_B_Output", "args": {"part": "car_frame"}})
 
     def test_compiler_plans_one_car_production(self):
         plan = compile_process_plan(CAR_PROCESS_PLAN)
@@ -359,6 +450,36 @@ class PlannerTests(unittest.TestCase):
         first_phone_unload = tools.index("Unload_B_Output")
         self.assertEqual(tools[first_phone_unload + 1], "Transport_B_Output_Pick")
 
+    def test_operation_subagent_plans_per_action_and_reuses_repeated_action(self):
+        top_plan = {
+            "plan_name": "produce_2_phones_1_car",
+            "strategy": "sequential",
+            "actions": [
+                {"action": "produce_phone"},
+                {"action": "reset_status", "line": "B"},
+                {"action": "produce_phone"},
+                {"action": "reset_status", "line": "B"},
+                {"action": "produce_car"},
+                {"action": "reset_status", "line": "A"},
+            ],
+        }
+        llm = FakeLLMClient([top_plan, PHONE_OPERATION_PLAN, CAR_OPERATION_PLAN])
+        agent = ProductionAgent(llm_client=llm)
+
+        plan = agent.run("\u8fde\u7eed\u751f\u4ea7\u4e24\u90e8\u624b\u673a\u3001\u4e00\u90e8\u8f66")
+
+        self.assertEqual(plan["planning_source"], "top_planner_operation_agent_compiler")
+        self.assertEqual(llm.calls, 3)
+        self.assertEqual(
+            sum(1 for step in plan["steps"] if step["tool"] == "Unload_B_Output"),
+            2,
+        )
+        self.assertEqual(
+            sum(1 for step in plan["steps"] if step["tool"] == "Unload_A_Output"),
+            1,
+        )
+        self.assertEqual(len(agent.last_subagent_plan["operations"]), 17)
+
     def test_compiler_interleaves_simultaneous_car_and_phone_start(self):
         plan = compile_process_plan({
             "plan_name": "parallel_start_1_car_1_phone",
@@ -371,12 +492,14 @@ class PlannerTests(unittest.TestCase):
         tools = [step["tool"] for step in plan["steps"]]
 
         self.assertEqual(plan["plan_name"], "parallel_start_1_car_1_phone")
-        self.assertIn("Load_A_Pick", tools[:4])
-        self.assertIn("Load_B_Pick", tools[:4])
+        self.assertIn("Load_A_Pick", tools)
+        self.assertIn("Load_B_Pick", tools)
+        self.assertIn("Transport_A_B_Transfer", tools)
+        self.assertIn("Transport_B_A2", tools)
         self.assertLess(tools.index("Load_A_Pick"), tools.index("Unload_B_Output"))
         self.assertLess(tools.index("Load_B_Pick"), tools.index("Unload_A_Output"))
 
-    def test_agent_retries_invalid_sequence_plan(self):
+    def test_agent_falls_back_when_operation_subagent_fails(self):
         bad_plan = {
             "plan_name": "bad_phone",
             "strategy": "sequential",
@@ -385,14 +508,14 @@ class PlannerTests(unittest.TestCase):
                  "part": "screen", "supplier": "B2", "layer": 1},
             ],
         }
-        llm = FakeLLMClient([PHONE_PROCESS_PLAN, bad_plan, PHONE_OPERATION_PLAN])
+        llm = FakeLLMClient([PHONE_PROCESS_PLAN, bad_plan, bad_plan, bad_plan])
         agent = ProductionAgent(llm_client=llm)
 
         plan = agent.run("produce one phone")
 
-        self.assertEqual(plan["plan_name"], "one_phone")
         self.assertEqual(plan["steps"], PHONE_PLAN["steps"])
-        self.assertEqual(llm.calls, 3)
+        self.assertEqual(plan["planning_source"], "top_planner_rules_operation_compiler")
+        self.assertEqual(llm.calls, 4)
 
     def test_rejects_unknown_tool_and_macro(self):
         with self.assertRaises(PlanValidationError):
@@ -408,11 +531,11 @@ class PlannerTests(unittest.TestCase):
                 "steps": [{"tool": "Load_A_Pick", "args": {"part": "cup"}}],
             })
 
-    def test_rejects_screen_loaded_on_main_b_shuttle(self):
-        with self.assertRaisesRegex(PlanValidationError, "Load_B2_Pick"):
+    def test_rejects_phone_base_loaded_on_main_b_shuttle(self):
+        with self.assertRaisesRegex(PlanValidationError, "Load_B_Pick"):
             validate_plan({
                 "plan_name": "bad",
-                "steps": [{"tool": "Load_B_Pick", "args": {"part": "screen"}}],
+                "steps": [{"tool": "Load_B_Pick", "args": {"part": "phone_base"}}],
             })
 
     def test_rejects_missing_args(self):
@@ -454,14 +577,13 @@ class PlannerTests(unittest.TestCase):
             "plan_name": "two_phones",
             "steps": (
                 PHONE_PLAN["steps"]
-                + [{"tool": "Transport_B_Output_Pick", "args": {}}]
                 + PHONE_PLAN["steps"]
             ),
         })
         tools = [step["tool"] for step in plan["steps"]]
         first_unload = tools.index("Unload_B_Output")
         self.assertEqual(tools[first_unload + 1], "Transport_B_Output_Pick")
-        self.assertEqual(tools[first_unload + 2], "Load_B_Pick")
+        self.assertEqual(tools[first_unload + 2], "Load_A_Pick")
 
     def test_sequence_rejects_loading_main_b_while_b_is_clear(self):
         plan = validate_plan({
@@ -470,7 +592,7 @@ class PlannerTests(unittest.TestCase):
                 {"tool": "Load_B_Pick", "args": {"part": "camera_module"}},
                 {"tool": "Transport_B_Pick_Assemble", "args": {}},
                 {"tool": "Transport_B_Assemble_Clear", "args": {}},
-                {"tool": "Load_B_Pick", "args": {"part": "phone_base"}},
+                {"tool": "Load_B_Pick", "args": {"part": "screen"}},
             ],
         })
         with self.assertRaisesRegex(PlanValidationError, "line B at pick"):
@@ -534,6 +656,30 @@ class CollisionManagerTests(unittest.TestCase):
 
 
 class ToolExecutorStateTests(unittest.TestCase):
+    def test_thread_safe_sim_proxy_serializes_concurrent_calls(self):
+        class SlowSim:
+            def __init__(self):
+                self.active = 0
+                self.max_active = 0
+                self.lock = threading.Lock()
+
+            def remote_call(self):
+                with self.lock:
+                    self.active += 1
+                    self.max_active = max(self.max_active, self.active)
+                time.sleep(0.01)
+                with self.lock:
+                    self.active -= 1
+
+        sim = SlowSim()
+        proxy = ThreadSafeSimProxy(sim)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(proxy.remote_call) for _ in range(2)]
+            for future in futures:
+                future.result()
+
+        self.assertEqual(sim.max_active, 1)
+
     def test_execute_tool_plan_dispatches_steps_in_order(self):
         controller = FactoryController.__new__(FactoryController)
         calls = []
@@ -717,8 +863,90 @@ class ToolExecutorStateTests(unittest.TestCase):
 
         self.assertEqual(controller.tool_state["station"]["B2"], "clear")
         self.assertEqual(moves[0][0], "line_b_aux")
-        self.assertEqual(moves[0][1], 0.42)
-        self.assertEqual(moves[0][2], -0.7)
+        self.assertAlmostEqual(moves[0][1], 0.42)
+        self.assertAlmostEqual(moves[0][2], -0.7)
+
+    def test_a2_clear_position_uses_initial_position(self):
+        controller = FactoryController.__new__(FactoryController)
+        controller.shuttle_initial_positions = {"line_a_aux": [-0.31, 0.73, 0.1]}
+
+        x, y = controller._station_position("A2", "clear")
+
+        self.assertAlmostEqual(x, -0.31)
+        self.assertAlmostEqual(y, 0.73)
+
+    def test_transfer_cross_line_uses_original_handoff_y(self):
+        controller = FactoryController.__new__(FactoryController)
+        controller._init_tool_state()
+        controller.tool_state["parts"]["A"]["phone_base"] = 101
+        controller.shuttles = {"line_a": object(), "line_b": object()}
+        controller.shuttle_handles = {"line_b": 202}
+        calls = []
+
+        def transfer(handle, source, target, **kwargs):
+            calls.append((handle, source, target, kwargs))
+
+        controller.transfer_part_between_lines = transfer
+
+        controller._execute_tool("Transport_A_B_Transfer", {"part": "phone_base"})
+
+        self.assertEqual(calls[0][0], 101)
+        self.assertEqual(calls[0][1:3], ("line_a", "line_b"))
+        self.assertAlmostEqual(calls[0][3]["y"], Y_ASSEM)
+
+    def test_output_drop_offsets_increment_per_line(self):
+        import factory_controller as factory_module
+
+        controller = FactoryController.__new__(FactoryController)
+        controller.output_drop_counts = {"line_a": 0, "line_b": 0}
+
+        self.assertEqual(controller._next_output_drop_offset("line_a"), (0.0, 0.0))
+        self.assertEqual(
+            controller._next_output_drop_offset("line_a"),
+            (factory_module.OUTPUT_DROP_STEP_X, 0.0),
+        )
+        self.assertEqual(
+            controller._next_output_drop_offset("line_a"),
+            (-factory_module.OUTPUT_DROP_STEP_X, 0.0),
+        )
+        self.assertEqual(controller._next_output_drop_offset("line_b"), (0.0, 0.0))
+
+    def test_finish_product_places_with_output_offset(self):
+        import factory_controller as factory_module
+
+        controller = FactoryController.__new__(FactoryController)
+        controller.output_drop_counts = {"line_a": 1, "line_b": 0}
+        placements = []
+
+        class FakeSim:
+            def getObjectPosition(self, handle, _relative_to):
+                if handle == 101:
+                    return [0.1, 0.2, 0.3]
+                return [0.5, 0.6, 0.0]
+
+        class FakeArm:
+            name = "fake"
+            is_holding = True
+
+            def pick_from_position(self, pos, handle):
+                return True
+
+            def place_at_position(self, pos, **kwargs):
+                placements.append((pos, kwargs))
+                return True
+
+            def move_to_home(self):
+                pass
+
+        controller.sim = FakeSim()
+
+        controller._finish_product(FakeArm(), 101, 202, "line_a")
+
+        self.assertAlmostEqual(placements[0][0][0], 0.5 + factory_module.OUTPUT_DROP_STEP_X)
+        self.assertEqual(
+            placements[0][1]["local_offset"],
+            (factory_module.OUTPUT_DROP_STEP_X, 0.0),
+        )
 
     def test_b_clear_position_uses_minimum_non_overlapping_center_gap(self):
         controller = FactoryController.__new__(FactoryController)
@@ -737,7 +965,7 @@ class ToolExecutorStateTests(unittest.TestCase):
         self.assertAlmostEqual(main_x, LINE_B_CENTER_X)
         self.assertAlmostEqual(aux_x, LINE_B_CENTER_X)
         self.assertLess(main_y, Y_ASSEM)
-        self.assertAlmostEqual(aux_y, Y_ASSEM)
+        self.assertGreater(aux_y, Y_ASSEM)
         self.assertAlmostEqual(
             aux_y - main_y,
             SHUTTLE_SIZE_Y + 2 * SHUTTLE_SAFE_MARGIN,

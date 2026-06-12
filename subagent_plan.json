@@ -1,0 +1,108 @@
+{
+  "plan_name": "produce_2_phones_1_car",
+  "strategy": "sequential",
+  "operations": [
+    {
+      "op": "load_base",
+      "line": "B",
+      "source_line": "A",
+      "part": "phone_base"
+    },
+    {
+      "op": "assemble",
+      "line": "B",
+      "source_line": "B",
+      "base": "phone_base",
+      "part": "screen",
+      "supplier": "B2",
+      "layer": 1
+    },
+    {
+      "op": "assemble",
+      "line": "B",
+      "source_line": "B",
+      "base": "phone_base",
+      "part": "camera_module",
+      "supplier": "B2",
+      "layer": 2
+    },
+    {
+      "op": "inspect",
+      "line": "B"
+    },
+    {
+      "op": "unload",
+      "line": "B",
+      "part": "phone_base"
+    },
+    {
+      "op": "reset_status",
+      "line": "B"
+    },
+    {
+      "op": "load_base",
+      "line": "B",
+      "source_line": "A",
+      "part": "phone_base"
+    },
+    {
+      "op": "assemble",
+      "line": "B",
+      "source_line": "B",
+      "base": "phone_base",
+      "part": "screen",
+      "supplier": "B2",
+      "layer": 1
+    },
+    {
+      "op": "assemble",
+      "line": "B",
+      "source_line": "B",
+      "base": "phone_base",
+      "part": "camera_module",
+      "supplier": "B2",
+      "layer": 2
+    },
+    {
+      "op": "inspect",
+      "line": "B"
+    },
+    {
+      "op": "unload",
+      "line": "B",
+      "part": "phone_base"
+    },
+    {
+      "op": "reset_status",
+      "line": "B"
+    },
+    {
+      "op": "load_base",
+      "line": "A",
+      "source_line": "A",
+      "part": "car_base"
+    },
+    {
+      "op": "assemble",
+      "line": "A",
+      "source_line": "B",
+      "base": "car_base",
+      "part": "car_frame",
+      "supplier": "B",
+      "layer": 1
+    },
+    {
+      "op": "inspect",
+      "line": "A"
+    },
+    {
+      "op": "unload",
+      "line": "A",
+      "part": "car_base"
+    },
+    {
+      "op": "reset_status",
+      "line": "A"
+    }
+  ]
+}

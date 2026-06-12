@@ -1,18 +1,92 @@
 {
-  "plan_name": "move_b_phone_base_to_output",
+  "plan_name": "produce_2_phones_1_car",
   "steps": [
     {
-      "tool": "Load_B_Pick",
+      "tool": "Load_A_Pick",
       "args": {
         "part": "phone_base"
       }
     },
     {
-      "tool": "Transport_B_Pick_Assemble",
+      "tool": "Transport_A_B_Transfer",
+      "args": {
+        "part": "phone_base"
+      }
+    },
+    {
+      "tool": "Transport_A_Transfer_Pick",
       "args": {}
     },
     {
-      "tool": "Transport_B_Assemble_Camera",
+      "tool": "Transport_B_Transfer_Forward",
+      "args": {}
+    },
+    {
+      "tool": "Transport_B2_Clear_Pick",
+      "args": {}
+    },
+    {
+      "tool": "Load_B2_Pick",
+      "args": {
+        "part": "camera_module",
+        "local_offset": [
+          -0.035,
+          0.0
+        ]
+      }
+    },
+    {
+      "tool": "Load_B2_Pick",
+      "args": {
+        "part": "screen",
+        "local_offset": [
+          0.035,
+          0.0
+        ]
+      }
+    },
+    {
+      "tool": "Transport_B2_Pick_Assemble",
+      "args": {}
+    },
+    {
+      "tool": "Hold_B2_Assemble",
+      "args": {
+        "part": "camera_module"
+      }
+    },
+    {
+      "tool": "Place_B_Assemble",
+      "args": {
+        "part": "camera_module",
+        "attach_to": "phone_base",
+        "layer": 1
+      }
+    },
+    {
+      "tool": "Hold_B2_Assemble",
+      "args": {
+        "part": "screen"
+      }
+    },
+    {
+      "tool": "Place_B_Assemble",
+      "args": {
+        "part": "screen",
+        "attach_to": "phone_base",
+        "layer": 2
+      }
+    },
+    {
+      "tool": "Transport_B2_Assemble_Clear",
+      "args": {}
+    },
+    {
+      "tool": "Transport_B_Forward_Camera",
+      "args": {}
+    },
+    {
+      "tool": "Inspect_B",
       "args": {}
     },
     {
@@ -24,9 +98,192 @@
       "args": {
         "part": "phone_base"
       }
+    },
+    {
+      "tool": "Transport_B_Output_Pick",
+      "args": {}
+    },
+    {
+      "tool": "Load_A_Pick",
+      "args": {
+        "part": "phone_base"
+      }
+    },
+    {
+      "tool": "Transport_A_B_Transfer",
+      "args": {
+        "part": "phone_base"
+      }
+    },
+    {
+      "tool": "Transport_A_Transfer_Pick",
+      "args": {}
+    },
+    {
+      "tool": "Transport_B_Transfer_Forward",
+      "args": {}
+    },
+    {
+      "tool": "Transport_B2_Clear_Pick",
+      "args": {}
+    },
+    {
+      "tool": "Load_B2_Pick",
+      "args": {
+        "part": "camera_module",
+        "local_offset": [
+          -0.035,
+          0.0
+        ]
+      }
+    },
+    {
+      "tool": "Load_B2_Pick",
+      "args": {
+        "part": "screen",
+        "local_offset": [
+          0.035,
+          0.0
+        ]
+      }
+    },
+    {
+      "tool": "Transport_B2_Pick_Assemble",
+      "args": {}
+    },
+    {
+      "tool": "Hold_B2_Assemble",
+      "args": {
+        "part": "camera_module"
+      }
+    },
+    {
+      "tool": "Place_B_Assemble",
+      "args": {
+        "part": "camera_module",
+        "attach_to": "phone_base",
+        "layer": 1
+      }
+    },
+    {
+      "tool": "Hold_B2_Assemble",
+      "args": {
+        "part": "screen"
+      }
+    },
+    {
+      "tool": "Place_B_Assemble",
+      "args": {
+        "part": "screen",
+        "attach_to": "phone_base",
+        "layer": 2
+      }
+    },
+    {
+      "tool": "Transport_B2_Assemble_Clear",
+      "args": {}
+    },
+    {
+      "tool": "Transport_B_Forward_Camera",
+      "args": {}
+    },
+    {
+      "tool": "Inspect_B",
+      "args": {}
+    },
+    {
+      "tool": "Transport_B_Camera_Output",
+      "args": {}
+    },
+    {
+      "tool": "Unload_B_Output",
+      "args": {
+        "part": "phone_base"
+      }
+    },
+    {
+      "tool": "Transport_B_Output_Pick",
+      "args": {}
+    },
+    {
+      "tool": "Load_B_Pick",
+      "args": {
+        "part": "car_frame"
+      }
+    },
+    {
+      "tool": "Transport_B_Pick_Assemble",
+      "args": {}
+    },
+    {
+      "tool": "Transport_A2_Clear_Transfer",
+      "args": {}
+    },
+    {
+      "tool": "Transport_B_A2",
+      "args": {
+        "part": "car_frame"
+      }
+    },
+    {
+      "tool": "Transport_B_Transfer_Pick",
+      "args": {}
+    },
+    {
+      "tool": "Transport_A2_Transfer_Assemble",
+      "args": {}
+    },
+    {
+      "tool": "Hold_A2_Assemble",
+      "args": {
+        "part": "car_frame"
+      }
+    },
+    {
+      "tool": "Transport_A2_Assemble_Clear",
+      "args": {}
+    },
+    {
+      "tool": "Load_A_Pick",
+      "args": {
+        "part": "car_base"
+      }
+    },
+    {
+      "tool": "Transport_A_Pick_Assemble",
+      "args": {}
+    },
+    {
+      "tool": "Place_A_Assemble",
+      "args": {
+        "part": "car_frame",
+        "attach_to": "car_base",
+        "layer": 1
+      }
+    },
+    {
+      "tool": "Transport_A_Assemble_Camera",
+      "args": {}
+    },
+    {
+      "tool": "Inspect_A",
+      "args": {}
+    },
+    {
+      "tool": "Transport_A_Camera_Output",
+      "args": {}
+    },
+    {
+      "tool": "Unload_A_Output",
+      "args": {
+        "part": "car_base"
+      }
+    },
+    {
+      "tool": "Transport_A_Output_Pick",
+      "args": {}
     }
   ],
-  "assumptions": [
-    "Unspecified line B part defaults to phone_base."
-  ]
+  "planning_source": "top_planner_operation_agent_compiler",
+  "planning_attempts": 1
 }

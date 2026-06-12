@@ -9,14 +9,21 @@ from tool_registry import SUPPORTED_PARTS
 from validator import PlanValidationError, validate_plan, validate_plan_sequence
 
 
-LINE_PARTS = {
+SOURCE_PARTS = {
+    "A": {"car_base", "phone_base"},
+    "B": {"car_frame", "screen", "camera_module"},
+}
+
+PRODUCT_PARTS = {
     "A": {"car_base", "car_frame"},
     "B": {"phone_base", "screen", "camera_module"},
 }
 
+LINE_PARTS = PRODUCT_PARTS
+
 DEFAULT_LINE_PART = {
     "A": "car_base",
-    "B": "phone_base",
+    "B": "car_frame",
 }
 
 
@@ -124,10 +131,32 @@ def compile_process_operations(
     steps: list[dict[str, Any]] = []
     line_started = {"A": False, "B": False}
     line_output = {"A": False, "B": False}
-    for operation in clean_operations:
+    index = 0
+    while index < len(clean_operations):
+        if _matches_phone_product_group(clean_operations, index):
+            source_line = "A"
+            line = "B"
+            if line_output[source_line]:
+                steps.append(_return_line_to_pick_step(source_line))
+                line_output[source_line] = False
+            if line_output[line]:
+                raise PlanValidationError(
+                    f"Line {line} is at output; reset_status is required before load_base."
+                )
+            steps.extend(_compile_phone_product_steps())
+            line_output[line] = True
+            line_started[line] = False
+            index += 5
+            continue
+
+        operation = clean_operations[index]
         op = operation["op"]
         line = operation.get("line")
         if op == "load_base":
+            source_line = operation["source_line"]
+            if line_output[source_line]:
+                steps.append(_return_line_to_pick_step(source_line))
+                line_output[source_line] = False
             if line_output[line]:
                 raise PlanValidationError(
                     f"Line {line} is at output; reset_status is required before load_base."
@@ -139,6 +168,10 @@ def compile_process_operations(
                 raise PlanValidationError(
                     f"Cannot assemble on line {line} before load_base."
                 )
+            source_line = operation["source_line"]
+            if line_output[source_line]:
+                steps.append(_return_line_to_pick_step(source_line))
+                line_output[source_line] = False
             steps.extend(_compile_assemble(operation))
         elif op == "inspect":
             steps.extend(_compile_inspect(operation))
@@ -164,6 +197,7 @@ def compile_process_operations(
             line_started[line] = False
         else:
             raise PlanValidationError(f"Unsupported process operation: {op}")
+        index += 1
     return steps
 
 
@@ -181,6 +215,16 @@ def actions_to_operations(
         for action in clean_actions:
             target = a_ops if _line_for_action(action) == "A" else b_ops
             target.extend(_action_to_operations(action))
+        load_sources = [
+            operation.get("source_line")
+            for operation in a_ops + b_ops
+            if operation.get("op") == "load_base"
+        ]
+        if len(load_sources) != len(set(load_sources)):
+            operations: list[dict[str, Any]] = []
+            for action in clean_actions:
+                operations.extend(_action_to_operations(action))
+            return operations
         return _interleave_operations(a_ops, b_ops)
 
     operations: list[dict[str, Any]] = []
@@ -262,12 +306,12 @@ def _validate_action(index: int, action: dict[str, Any]) -> dict[str, Any]:
 
 def _validate_move_target(index: int, payload: dict[str, Any]) -> dict[str, Any]:
     line = payload.get("line")
-    if line not in LINE_PARTS:
+    if line not in SOURCE_PARTS:
         raise PlanValidationError(f"Process item {index} has unsupported line: {line!r}")
     part = payload.get("part") or DEFAULT_LINE_PART[line]
-    if part not in SUPPORTED_PARTS or part not in LINE_PARTS[line]:
+    if part not in SUPPORTED_PARTS or part not in SOURCE_PARTS[line]:
         raise PlanValidationError(
-            f"Process item {index} cannot move part {part!r} on line {line}."
+            f"Process item {index} cannot move source part {part!r} on line {line}."
         )
     return {"action": "move_to_output", "line": line, "part": part}
 
@@ -278,25 +322,40 @@ def _validate_operation(index: int, operation: dict[str, Any]) -> dict[str, Any]
     op = operation.get("op")
     if op == "load_base":
         line = _required_line(index, operation)
+        source_line = _required_source_line(index, operation)
         part = _required_part(index, operation, "part")
-        if part not in LINE_PARTS[line]:
+        if part not in PRODUCT_PARTS[line]:
             raise PlanValidationError(
-                f"Process operation {index} cannot load {part} on line {line}."
+                f"Process operation {index} cannot use {part} as product-line {line} base."
             )
-        return {"op": "load_base", "line": line, "part": part}
+        if part not in SOURCE_PARTS[source_line]:
+            raise PlanValidationError(
+                f"Process operation {index} cannot source {part} from line {source_line}."
+            )
+        return {
+            "op": "load_base",
+            "line": line,
+            "source_line": source_line,
+            "part": part,
+        }
     if op == "assemble":
         line = _required_line(index, operation)
+        source_line = _required_source_line(index, operation)
         base = _required_part(index, operation, "base")
         part = _required_part(index, operation, "part")
-        supplier = operation.get("supplier")
-        expected_supplier = "A2" if line == "A" else "B2"
-        if supplier != expected_supplier:
+        if base not in PRODUCT_PARTS[line] or part not in PRODUCT_PARTS[line]:
             raise PlanValidationError(
-                f"Process operation {index} line {line} requires supplier {expected_supplier}."
+                f"Process operation {index} has part not used by product line {line}."
             )
-        if base not in LINE_PARTS[line] or part not in LINE_PARTS[line]:
+        if part not in SOURCE_PARTS[source_line]:
             raise PlanValidationError(
-                f"Process operation {index} has part not available on line {line}."
+                f"Process operation {index} cannot source {part} from line {source_line}."
+            )
+        supplier = operation.get("supplier")
+        expected_supplier = "B2" if line == "B" and source_line == "B" else source_line
+        if supplier is not None and supplier != expected_supplier:
+            raise PlanValidationError(
+                f"Process operation {index} line {line} requires source_line {source_line}."
             )
         layer = operation.get("layer", 1)
         if isinstance(layer, bool) or not isinstance(layer, int) or layer < 0:
@@ -304,9 +363,10 @@ def _validate_operation(index: int, operation: dict[str, Any]) -> dict[str, Any]
         return {
             "op": "assemble",
             "line": line,
+            "source_line": source_line,
             "base": base,
             "part": part,
-            "supplier": supplier,
+            "supplier": expected_supplier,
             "layer": layer,
         }
     if op == "inspect":
@@ -320,9 +380,9 @@ def _validate_operation(index: int, operation: dict[str, Any]) -> dict[str, Any]
     if op == "move_to_output":
         line = _required_line(index, operation)
         part = _required_part(index, operation, "part")
-        if part not in LINE_PARTS[line]:
+        if part not in SOURCE_PARTS[line]:
             raise PlanValidationError(
-                f"Process operation {index} cannot move {part} on line {line}."
+                f"Process operation {index} cannot move source part {part} on line {line}."
             )
         return {"op": "move_to_output", "line": line, "part": part}
     if op == "reset_status":
@@ -334,6 +394,15 @@ def _required_line(index: int, operation: dict[str, Any]) -> str:
     line = operation.get("line")
     if line not in LINE_PARTS:
         raise PlanValidationError(f"Process operation {index} has invalid line: {line!r}")
+    return line
+
+
+def _required_source_line(index: int, operation: dict[str, Any]) -> str:
+    line = operation.get("source_line")
+    if line not in SOURCE_PARTS:
+        raise PlanValidationError(
+            f"Process operation {index} has invalid source_line: {line!r}"
+        )
     return line
 
 
@@ -375,18 +444,24 @@ def _action_to_operations(action: dict[str, Any]) -> list[dict[str, Any]]:
 def _product_operations(product: str) -> list[dict[str, Any]]:
     spec = PRODUCT_SPECS[product]
     line = spec["line"]
-    base = spec["base_part"]
-    supplier = "A2" if line == "A" else "B2"
+    base_spec = spec["base_part"]
+    base = base_spec["part"]
     operations: list[dict[str, Any]] = [
-        {"op": "load_base", "line": line, "part": base},
+        {
+            "op": "load_base",
+            "line": line,
+            "source_line": base_spec["source_line"],
+            "part": base,
+        },
     ]
     for assembly in spec["assemblies"]:
         operations.append({
             "op": "assemble",
             "line": line,
+            "source_line": assembly["source_line"],
             "base": base,
             "part": assembly["part"],
-            "supplier": supplier,
+            "supplier": "B2" if line == "B" and assembly["source_line"] == "B" else assembly["source_line"],
             "layer": assembly["layer"],
         })
     operations.extend([
@@ -399,6 +474,13 @@ def _product_operations(product: str) -> list[dict[str, Any]]:
 def _interleave_operations_by_line(
     operations: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    load_sources = [
+        operation.get("source_line")
+        for operation in operations
+        if operation.get("op") == "load_base"
+    ]
+    if len(load_sources) != len(set(load_sources)):
+        return operations
     a_ops = [operation for operation in operations if operation.get("line") == "A"]
     b_ops = [operation for operation in operations if operation.get("line") == "B"]
     other_ops = [
@@ -429,33 +511,57 @@ def _has_car_and_phone_actions(actions: list[dict[str, Any]]) -> bool:
 
 def _compile_load_base(operation: dict[str, Any]) -> list[dict[str, Any]]:
     line = operation["line"]
-    if line == "A":
-        return [
-            {"tool": "Load_A_Pick", "args": {"part": operation["part"]}},
-            {"tool": "Transport_A_Pick_Assemble", "args": {}},
-        ]
-    return [
-        {"tool": "Load_B_Pick", "args": {"part": operation["part"]}},
-        {"tool": "Transport_B_Pick_Assemble", "args": {}},
-    ]
+    source_line = operation["source_line"]
+    part = operation["part"]
+    if line == "A" and source_line == "A" and part == "car_base":
+        return []
+    steps = _load_source_to_assemble_steps(source_line, part)
+    if source_line != line:
+        steps.append(_cross_line_step(source_line, line, part))
+        steps.append(_return_assemble_to_pick_step(source_line))
+    return steps
 
 
 def _compile_assemble(operation: dict[str, Any]) -> list[dict[str, Any]]:
     line = operation["line"]
+    source_line = operation["source_line"]
     part = operation["part"]
     base = operation["base"]
     layer = operation["layer"]
-    if line == "A":
+    if line == "A" and source_line == "B":
         return [
-            {"tool": "Transport_A_Assemble_Forward", "args": {}},
-            {"tool": "Transport_A2_Clear_Pick", "args": {}},
-            {"tool": "Load_A2_Pick", "args": {"part": part}},
-            {"tool": "Transport_A2_Pick_Assemble", "args": {}},
+            {"tool": "Load_B_Pick", "args": {"part": part}},
+            {"tool": "Transport_B_Pick_Assemble", "args": {}},
+            {"tool": "Transport_A2_Clear_Transfer", "args": {}},
+            {"tool": "Transport_B_A2", "args": {"part": part}},
+            {"tool": "Transport_B_Transfer_Pick", "args": {}},
+            {"tool": "Transport_A2_Transfer_Assemble", "args": {}},
             {"tool": "Hold_A2_Assemble", "args": {"part": part}},
             {"tool": "Transport_A2_Assemble_Clear", "args": {}},
-            {"tool": "Transport_A_Forward_Assemble", "args": {}},
+            {"tool": "Load_A_Pick", "args": {"part": base}},
+            {"tool": "Transport_A_Pick_Assemble", "args": {}},
             {
                 "tool": "Place_A_Assemble",
+                "args": {"part": part, "attach_to": base, "layer": layer},
+            },
+        ]
+    if line == "A":
+        return [
+            {"tool": "Hold_A_Assemble", "args": {"part": part}},
+            {
+                "tool": "Place_A_Assemble",
+                "args": {"part": part, "attach_to": base, "layer": layer},
+            },
+        ]
+    if line == "B" and source_line == "A":
+        return [
+            {"tool": "Load_A_Pick", "args": {"part": part}},
+            {"tool": "Transport_A_Pick_Assemble", "args": {}},
+            {"tool": "Transport_A_B", "args": {"part": part}},
+            {"tool": "Transport_A_Assemble_Pick", "args": {}},
+            {"tool": "Hold_B_Assemble", "args": {"part": part}},
+            {
+                "tool": "Place_B_Assemble",
                 "args": {"part": part, "attach_to": base, "layer": layer},
             },
         ]
@@ -498,10 +604,79 @@ def _compile_unload(operation: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _matches_phone_product_group(operations: list[dict[str, Any]], index: int) -> bool:
+    group = operations[index:index + 5]
+    if len(group) != 5:
+        return False
+    return group == [
+        {"op": "load_base", "line": "B", "source_line": "A", "part": "phone_base"},
+        {
+            "op": "assemble",
+            "line": "B",
+            "source_line": "B",
+            "base": "phone_base",
+            "part": "screen",
+            "supplier": "B2",
+            "layer": 1,
+        },
+        {
+            "op": "assemble",
+            "line": "B",
+            "source_line": "B",
+            "base": "phone_base",
+            "part": "camera_module",
+            "supplier": "B2",
+            "layer": 2,
+        },
+        {"op": "inspect", "line": "B"},
+        {"op": "unload", "line": "B", "part": "phone_base"},
+    ]
+
+
+def _compile_phone_product_steps() -> list[dict[str, Any]]:
+    return [
+        {"tool": "Load_A_Pick", "args": {"part": "phone_base"}},
+        {"tool": "Transport_A_B_Transfer", "args": {"part": "phone_base"}},
+        {"tool": "Transport_A_Transfer_Pick", "args": {}},
+        {"tool": "Transport_B_Transfer_Forward", "args": {}},
+        {"tool": "Transport_B2_Clear_Pick", "args": {}},
+        {
+            "tool": "Load_B2_Pick",
+            "args": {"part": "camera_module", "local_offset": [-0.035, 0.0]},
+        },
+        {
+            "tool": "Load_B2_Pick",
+            "args": {"part": "screen", "local_offset": [0.035, 0.0]},
+        },
+        {"tool": "Transport_B2_Pick_Assemble", "args": {}},
+        {"tool": "Hold_B2_Assemble", "args": {"part": "camera_module"}},
+        {
+            "tool": "Place_B_Assemble",
+            "args": {"part": "camera_module", "attach_to": "phone_base", "layer": 1},
+        },
+        {"tool": "Hold_B2_Assemble", "args": {"part": "screen"}},
+        {
+            "tool": "Place_B_Assemble",
+            "args": {"part": "screen", "attach_to": "phone_base", "layer": 2},
+        },
+        {"tool": "Transport_B2_Assemble_Clear", "args": {}},
+        {"tool": "Transport_B_Forward_Camera", "args": {}},
+        {"tool": "Inspect_B", "args": {}},
+        {"tool": "Transport_B_Camera_Output", "args": {}},
+        {"tool": "Unload_B_Output", "args": {"part": "phone_base"}},
+    ]
+
+
 def _return_line_to_pick_step(line: str) -> dict[str, Any]:
     if line == "A":
         return {"tool": "Transport_A_Output_Pick", "args": {}}
     return {"tool": "Transport_B_Output_Pick", "args": {}}
+
+
+def _return_assemble_to_pick_step(line: str) -> dict[str, Any]:
+    if line == "A":
+        return {"tool": "Transport_A_Assemble_Pick", "args": {}}
+    return {"tool": "Transport_B_Assemble_Pick", "args": {}}
 
 
 def _move_part_to_output_steps(line: str, part: str) -> list[dict[str, Any]]:
@@ -513,19 +688,6 @@ def _move_part_to_output_steps(line: str, part: str) -> list[dict[str, Any]]:
             {"tool": "Transport_A_Camera_Output", "args": {}},
             {"tool": "Unload_A_Output", "args": {"part": part}},
         ]
-    if part == "screen":
-        return [
-            {"tool": "Transport_B_Pick_Assemble", "args": {}},
-            {"tool": "Transport_B2_Clear_Pick", "args": {}},
-            {"tool": "Load_B2_Pick", "args": {"part": "screen"}},
-            {"tool": "Transport_B2_Pick_Assemble", "args": {}},
-            {"tool": "Hold_B2_Assemble", "args": {"part": "screen"}},
-            {"tool": "Transport_B2_Assemble_Clear", "args": {}},
-            {"tool": "Place_B_Assemble", "args": {"part": "screen", "layer": 0}},
-            {"tool": "Transport_B_Assemble_Camera", "args": {}},
-            {"tool": "Transport_B_Camera_Output", "args": {}},
-            {"tool": "Unload_B_Output", "args": {"part": "screen"}},
-        ]
     return [
         {"tool": "Load_B_Pick", "args": {"part": part}},
         {"tool": "Transport_B_Pick_Assemble", "args": {}},
@@ -533,3 +695,23 @@ def _move_part_to_output_steps(line: str, part: str) -> list[dict[str, Any]]:
         {"tool": "Transport_B_Camera_Output", "args": {}},
         {"tool": "Unload_B_Output", "args": {"part": part}},
     ]
+
+
+def _load_source_to_assemble_steps(source_line: str, part: str) -> list[dict[str, Any]]:
+    if source_line == "A":
+        return [
+            {"tool": "Load_A_Pick", "args": {"part": part}},
+            {"tool": "Transport_A_Pick_Assemble", "args": {}},
+        ]
+    return [
+        {"tool": "Load_B_Pick", "args": {"part": part}},
+        {"tool": "Transport_B_Pick_Assemble", "args": {}},
+    ]
+
+
+def _cross_line_step(source_line: str, target_line: str, part: str) -> dict[str, Any]:
+    if source_line == "A" and target_line == "B":
+        return {"tool": "Transport_A_B", "args": {"part": part}}
+    if source_line == "B" and target_line == "A":
+        return {"tool": "Transport_B_A", "args": {"part": part}}
+    raise PlanValidationError(f"Unsupported cross-line route: {source_line} -> {target_line}")

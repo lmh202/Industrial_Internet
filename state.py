@@ -73,7 +73,8 @@ class PlanState:
 
         if tool in PLACE_TOOLS:
             line, arm = _place_line_and_arm(tool)
-            self._require_station(index, tool, line, "assemble")
+            if not (tool == "Place_B_Assemble" and self.station[line] == "forward"):
+                self._require_station(index, tool, line, "assemble")
             part = args["part"]
             if self.holding[arm] != part:
                 raise PlanStateError(
@@ -109,6 +110,9 @@ class PlanState:
 
         if tool in CROSS_LINE_TOOLS:
             source, target = _cross_line_source_target(tool)
+            if tool.endswith("_Transfer"):
+                self._require_station(index, tool, source, "pick")
+                self._require_station(index, tool, target, "pick")
             part = args["part"]
             if part not in self.parts[source]:
                 raise PlanStateError(
@@ -117,8 +121,9 @@ class PlanState:
                 )
             self.parts[source].remove(part)
             self.parts[target].add(part)
-            self.station[source] = "assemble"
-            self.station[target] = "assemble"
+            station = "transfer" if target in {"A2", "B2"} or tool.endswith("_Transfer") else "assemble"
+            self.station[source] = station
+            self.station[target] = station
             return
 
     def _require_station(self, index: int, tool: str, line: str, expected: str) -> None:
@@ -156,6 +161,10 @@ def _place_line_and_arm(tool: str) -> tuple[str, str]:
 
 
 def _cross_line_source_target(tool: str) -> tuple[str, str]:
-    if tool == "Transport_A_B":
+    if tool in {"Transport_A_B", "Transport_A_B_Transfer"}:
         return "A", "B"
+    if tool == "Transport_B_A_Transfer":
+        return "B", "A"
+    if tool == "Transport_B_A2":
+        return "B", "A2"
     return "B", "A"

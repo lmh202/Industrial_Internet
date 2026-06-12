@@ -174,6 +174,11 @@ def _save_plan(plan: dict) -> None:
     print(f"[Planner] 计划已保存: {PLAN_OUTPUT_PATH}")
 
 
+def _save_top_plan_snapshot(plan: dict) -> None:
+    _write_json(TOP_PLAN_OUTPUT_PATH, plan)
+    print(f"[Planner] top plan saved: {TOP_PLAN_OUTPUT_PATH}")
+
+
 def _save_planner_outputs(agent: ProductionAgent, plan: dict) -> None:
     top_level_plan = getattr(agent, "last_top_level_plan", None)
     if top_level_plan is not None:
@@ -253,7 +258,7 @@ def main(argv=None) -> int:
     if args.parse_only and not args.prompt:
         parser.error("--parse-only 需要提供生产任务文本")
 
-    agent = ProductionAgent()
+    agent = ProductionAgent(on_top_plan=_save_top_plan_snapshot)
     if args.parse_only:
         prompt = " ".join(args.prompt)
         plan = agent.run(prompt)

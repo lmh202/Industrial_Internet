@@ -1,0 +1,27 @@
+{
+  "plan_name": "produce_2_phones_1_car",
+  "strategy": "sequential",
+  "actions": [
+    {
+      "action": "produce_phone"
+    },
+    {
+      "action": "reset_status",
+      "line": "B"
+    },
+    {
+      "action": "produce_phone"
+    },
+    {
+      "action": "reset_status",
+      "line": "B"
+    },
+    {
+      "action": "produce_car"
+    },
+    {
+      "action": "reset_status",
+      "line": "A"
+    }
+  ]
+}

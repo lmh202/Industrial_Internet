@@ -3,6 +3,7 @@
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import math
+import threading
 import time
 
 from collision_manager import CollisionManager
@@ -40,6 +41,25 @@ class ProductionStepError(RuntimeError):
     """Raised when a required pick/place/move step cannot be completed."""
 
 
+class ThreadSafeSimProxy:
+    """Serialize CoppeliaSim ZMQ Remote API calls across worker threads."""
+
+    def __init__(self, sim):
+        self._sim = sim
+        self._lock = threading.RLock()
+
+    def __getattr__(self, name):
+        attr = getattr(self._sim, name)
+        if not callable(attr):
+            return attr
+
+        def locked_call(*args, **kwargs):
+            with self._lock:
+                return attr(*args, **kwargs)
+
+        return locked_call
+
+
 STATION_Y = {
     "pick": Y_PUT,
     "assemble": Y_ASSEM,
@@ -49,12 +69,19 @@ STATION_Y = {
 
 B_CLEAR_OFFSET_X = SHUTTLE_SIZE_X + 2 * SHUTTLE_SAFE_MARGIN
 ASSEMBLE_FOLLOW_GAP_Y = SHUTTLE_SIZE_Y + 2 * SHUTTLE_SAFE_MARGIN
+PHONE_MAIN_FORWARD_Y = 0.13
+PHONE_AUX_REAR_Y = 0.04
+MID_HANDOFF_X = 0.16
+PHONE_MAIN_ASSEMBLE_OFFSET_X = 0.0
+PHONE_AUX_ASSEMBLE_OFFSET_X = 0.0
+PHONE_AUX_CLEAR_Y = 0.12
+OUTPUT_DROP_STEP_X = 0.035
 
 
 class FactoryController:
     def __init__(self, sim, dt: float = SIM_DT,
                  render_delay: float = SIM_RENDER_DELAY):
-        self.sim = sim
+        self.sim = ThreadSafeSimProxy(sim)
         self.dt = dt
         self.render_delay = render_delay
         self.arms: dict[str, RobotArmController] = {}
@@ -62,9 +89,11 @@ class FactoryController:
         self.shuttle_handles: dict[str, int] = {}
         self.shuttle_initial_positions: dict[str, list[float]] = {}
         self.obstacle_handles: dict[str, int] = {}
-        self.part_templates: dict[str, int] = {}
-        self.part_stock_positions: dict[str, list[float]] = {}
+        self.part_templates: dict[str, list[int]] = {}
+        self.part_stock_positions: dict[str, list[list[float]]] = {}
+        self._part_template_cursor: dict[str, int] = {}
         self.output_bins: dict[str, int] = {}
+        self.output_drop_counts: dict[str, int] = {"line_a": 0, "line_b": 0}
         self._init_scene()
 
     def produce_plan(self, tasks: list[dict]):
@@ -115,22 +144,24 @@ class FactoryController:
                 render_delay=self.render_delay)
 
         self.part_templates = {
-            "car_base": self._object(["Part_Car_Base", "Part_Bottom_A0"]),
-            "car_frame": self._object(["Part_Car_Frame", "Part_Top_A0"]),
-            "phone_base": self._object(["Part_Phone1", "Part_Phone"]),
-            "screen": self._object(["Part_Screen"]),
-            "camera_module": self._object(["Part_Camera_Module", "Part_Camear_Module"]),
+            "car_base": [self._object(["Part_Car_Base", "Part_Bottom_A0"])],
+            "phone_base": [
+                self._object(["Part_Phone1", "Part_Phone"]),
+                self._object(["Part_Phone2"]),
+            ],
+            "car_frame": [self._object(["Part_Car_Frame", "Part_Top_A0"])],
+            "screen": [self._object(["Part_Screen"])],
+            "camera_module": [self._object(["Part_Camera_Module", "Part_Camear_Module"])],
         }
         self.part_stock_positions = {
-            "car_base": [-0.626, 0.803, SEGMENT_HEIGHT + 0.005],
-            "car_frame": [-0.626, 0.843, SEGMENT_HEIGHT + 0.004],
-            "phone_base": [0.626, 0.803, SEGMENT_HEIGHT + 0.005],
-            "screen": [0.626, 0.843, SEGMENT_HEIGHT + 0.004],
-            "camera_module": [0.626, 0.883, SEGMENT_HEIGHT + 0.004],
+            name: [self.sim.getObjectPosition(handle, -1) for handle in handles]
+            for name, handles in self.part_templates.items()
         }
-        for name, handle in self.part_templates.items():
-            self.sim.setObjectParent(handle, -1, True)
-            self.sim.setObjectPosition(handle, -1, self.part_stock_positions[name])
+        self._part_template_cursor = {name: 0 for name in self.part_templates}
+        for name, handles in self.part_templates.items():
+            for handle, position in zip(handles, self.part_stock_positions[name]):
+                self.sim.setObjectParent(handle, -1, True)
+                self.sim.setObjectPosition(handle, -1, position)
         self.output_bins = {
             "line_a": self._object(["OutputBin_A"]),
             "line_b": self._object(["OutputBin_B"]),
@@ -260,6 +291,7 @@ class FactoryController:
             "parts": {"A": {}, "A2": {}, "B": {}, "B2": {}},
             "holding": {"A": None, "B": None, "mid": None},
         }
+        self.output_drop_counts = {"line_a": 0, "line_b": 0}
 
     def _execute_tool(self, tool: str, args: dict):
         spec = TOOL_REGISTRY.get(tool)
@@ -350,7 +382,7 @@ class FactoryController:
         self._tool_unload(spec.line, args)
 
     def _execute_cross_line_tool(self, spec, args: dict):
-        self._tool_cross_line(spec.source_line, spec.target_line, args)
+        self._tool_cross_line(spec.name, spec.source_line, spec.target_line, args)
 
     def _tool_transport(self, line: str, source: str, target: str):
         self._require_station(line, source)
@@ -395,7 +427,9 @@ class FactoryController:
         self.tool_state["holding"][arm_line] = {"part": part, "handle": handle}
 
     def _tool_place(self, line: str, args: dict):
-        self._require_station(line, "assemble")
+        current_station = self.tool_state["station"][line]
+        if not (line == "B" and current_station == "forward"):
+            self._require_station(line, "assemble")
         holding = self.tool_state["holding"][line]
         part = args["part"]
         if holding is None or holding["part"] != part:
@@ -412,9 +446,10 @@ class FactoryController:
         if layer is None:
             layer = self._default_layer(part, attach_to)
         local_offset = tuple(args.get("local_offset", (0.0, 0.0)))
+        station_x, station_y = self._station_position(line, current_station)
         target_pos = [
-            self._line_center_x(line) + local_offset[0],
-            Y_ASSEM + local_offset[1],
+            station_x + local_offset[0],
+            station_y + local_offset[1],
             SEGMENT_HEIGHT + SHUTTLE_PART_Z,
         ]
         self._place_held_on_shuttle(
@@ -441,25 +476,33 @@ class FactoryController:
         if part not in self.tool_state["parts"][line]:
             raise ProductionStepError(f"{part} is not on line {line} shuttle")
         handle = self.tool_state["parts"][line].pop(part)
+        owner = self._line_owner(line)
         self._finish_product(
             self._pick_arm(line),
             handle,
-            self.output_bins[self._line_owner(line)])
+            self.output_bins[owner],
+            owner)
 
-    def _tool_cross_line(self, source: str, target: str, args: dict):
+    def _tool_cross_line(self, tool: str, source: str, target: str, args: dict):
         part = args["part"]
+        if tool.endswith("_Transfer"):
+            self._require_station(source, "pick")
+            self._require_station(target, "pick")
         if part not in self.tool_state["parts"][source]:
             raise ProductionStepError(f"{part} is not on line {source} shuttle")
         handle = self.tool_state["parts"][source].pop(part)
+        return_to_line = target not in {"A2", "B2"} and not tool.endswith("_Transfer")
         self.transfer_part_between_lines(
             handle,
             self._line_owner(source),
             self._line_owner(target),
             y=Y_ASSEM,
-            target_offset=tuple(args.get("target_offset", (0.0, 0.0))))
+            target_offset=tuple(args.get("target_offset", (0.0, 0.0))),
+            return_to_line=return_to_line)
         self.tool_state["parts"][target][part] = handle
-        self.tool_state["station"][source] = "assemble"
-        self.tool_state["station"][target] = "assemble"
+        station = "assemble" if return_to_line else "transfer"
+        self.tool_state["station"][source] = station
+        self.tool_state["station"][target] = station
 
     def _require_station(self, line: str, station: str):
         current = self.tool_state["station"][line]
@@ -498,19 +541,37 @@ class FactoryController:
         if line == "A" and station == "forward":
             return LINE_A_CENTER_X, Y_ASSEM - ASSEMBLE_FOLLOW_GAP_Y
         if line == "A2" and station == "clear":
-            pos = self.shuttle_initial_positions["line_a_aux"]
-            return pos[0], pos[1]
+            pos = self.shuttle_initial_positions.get("line_a_aux")
+            if pos is not None:
+                return pos[0], pos[1]
+            return LINE_A_CENTER_X, Y_PUT
+        if line == "A2" and station == "transfer":
+            return self._mid_handoff_x("line_a_aux"), Y_ASSEM
+        if line == "A2" and station == "assemble":
+            return LINE_A_CENTER_X, Y_ASSEM
         if line == "B" and station == "forward":
-            return LINE_B_CENTER_X, Y_ASSEM - ASSEMBLE_FOLLOW_GAP_Y
+            return (
+                LINE_B_CENTER_X + PHONE_MAIN_ASSEMBLE_OFFSET_X,
+                Y_ASSEM - PHONE_MAIN_FORWARD_Y,
+            )
+        if line == "B" and station == "transfer":
+            return self._mid_handoff_x("line_b"), Y_ASSEM
         if line == "B" and station == "clear":
             return LINE_B_CENTER_X - B_CLEAR_OFFSET_X, Y_ASSEM
         if line == "B2" and station == "clear":
-            pos = self.shuttle_initial_positions["line_b_aux"]
-            return pos[0], pos[1]
+            pos = self.shuttle_initial_positions.get("line_b_aux")
+            if pos is not None:
+                return pos[0], pos[1]
+            return LINE_B_CENTER_X - B_CLEAR_OFFSET_X - 0.03, PHONE_AUX_CLEAR_Y
+        if line == "B2" and station == "assemble":
+            return (
+                LINE_B_CENTER_X + PHONE_AUX_ASSEMBLE_OFFSET_X,
+                Y_ASSEM + PHONE_AUX_REAR_Y,
+            )
         return self._line_center_x(line), STATION_Y[station]
 
     def _put_arm(self, line: str):
-        return self.arms["put_a" if line in {"A", "A2"} else "put_b"]
+        return self.arms["put_a" if line.startswith("A") else "put_b"]
 
     def _assemble_arm(self, line: str):
         return self.arms["assemble_car" if line == "A" else "assemble_phone"]
@@ -619,7 +680,8 @@ class FactoryController:
         yield "car inspected"
         self._move_shuttle("line_a", shuttle, LINE_A_CENTER_X, Y_POLISH, "car_to_pick")
         yield "car moved to output"
-        self._finish_product(self.arms["pick_car"], base, self.output_bins["line_a"])
+        self._finish_product(
+            self.arms["pick_car"], base, self.output_bins["line_a"], "line_a")
         print("[Factory] car complete")
         yield "car complete"
 
@@ -680,25 +742,31 @@ class FactoryController:
         yield "phone inspected"
         self._move_shuttle("line_b", shuttle, LINE_B_CENTER_X, Y_POLISH, "phone_to_pick")
         yield "phone moved to output"
-        self._finish_product(self.arms["pick_phone"], base, self.output_bins["line_b"])
+        self._finish_product(
+            self.arms["pick_phone"], base, self.output_bins["line_b"], "line_b")
         print("[Factory] phone complete")
         yield "phone complete"
 
     def _fresh_part(self, name: str) -> int:
-        template = self.part_templates[name]
+        templates = self.part_templates[name]
+        cursor = self._part_template_cursor.get(name, 0) % len(templates)
+        template = templates[cursor]
+        stock_position = self.part_stock_positions[name][cursor]
+        self._part_template_cursor[name] = cursor + 1
         try:
             handle = self.sim.copyPasteObjects([template], 0)[0]
         except Exception:
             handle = template
         self.sim.setObjectParent(handle, -1, True)
-        self.sim.setObjectPosition(handle, -1, self.part_stock_positions[name])
+        self.sim.setObjectPosition(handle, -1, stock_position)
         return handle
 
     def transfer_part_between_lines(self, part_handle: int,
                                     source: str,
                                     target: str,
                                     y: float = Y_ASSEM,
-                                    target_offset: tuple[float, float] = (0.0, 0.0)):
+                                    target_offset: tuple[float, float] = (0.0, 0.0),
+                                    return_to_line: bool = True):
         """Use Robot_Put_Mid to move a part from one line shuttle to the other."""
         if source not in self.shuttles or target not in self.shuttles:
             raise ValueError(f"Unknown transfer line: {source} -> {target}")
@@ -709,10 +777,10 @@ class FactoryController:
         target_shuttle = self.shuttles[target]
         target_handle = self.shuttle_handles[target]
 
-        self._move_shuttle(source, source_shuttle, source_x, y,
-                           f"mid_transfer_{source}_source")
-        self._move_shuttle(target, target_shuttle, target_x, y,
-                           f"mid_transfer_{target}_target")
+        self._move_shuttles_parallel([
+            (source, "current", "transfer", source, source_shuttle, source_x, y),
+            (target, "current", "transfer", target, target_shuttle, target_x, y),
+        ])
 
         arm = self.arms["put_mid"]
         self._pick_and_hold(arm, part_handle)
@@ -724,21 +792,33 @@ class FactoryController:
         self._place_held_on_shuttle(
             arm, part_handle, target_pos, target_handle,
             SHUTTLE_PART_Z, local_offset=target_offset)
+        if not return_to_line:
+            return
+        self._move_shuttle(source, source_shuttle, self._line_x(source), y,
+                           f"mid_transfer_{source}_return")
+        self._move_shuttle(target, target_shuttle, self._line_x(target), y,
+                           f"mid_transfer_{target}_return")
 
     def _line_x(self, line: str) -> float:
         if line == "line_a":
             return LINE_A_CENTER_X
+        if line == "line_a_aux":
+            return LINE_A_CENTER_X
         if line == "line_b":
+            return LINE_B_CENTER_X
+        if line == "line_b_aux":
             return LINE_B_CENTER_X
         raise ValueError(f"Unknown line: {line}")
 
     def _mid_handoff_x(self, line: str) -> float:
-        min_gap = SHUTTLE_SIZE_X + 2 * SHUTTLE_SAFE_MARGIN + 0.005
-        inner_x = min_gap / 2
         if line == "line_a":
-            return -inner_x
+            return -MID_HANDOFF_X
+        if line == "line_a_aux":
+            return -MID_HANDOFF_X
         if line == "line_b":
-            return inner_x
+            return MID_HANDOFF_X
+        if line == "line_b_aux":
+            return MID_HANDOFF_X
         raise ValueError(f"Unknown line: {line}")
 
     def _move_shuttle(self, owner: str, shuttle, x: float, y: float, key: str):
@@ -822,13 +902,16 @@ class FactoryController:
         if self._segment_is_safe(owner, start_x, start_y, target_x, target_y):
             return [(target_x, target_y)]
 
+        candidates = []
+        if owner in {"line_b", "line_b_aux"}:
+            candidates.append([(start_x, target_y), (target_x, target_y)])
+
         if owner == "line_a":
             lanes = [self._side_lane_x(owner, LINE_A_CENTER_X, "static_a2", 1)]
         elif owner == "line_b":
             lanes = [self._side_lane_x(owner, LINE_B_CENTER_X, "static_b2", -1)]
         else:
             lanes = [target_x]
-        candidates = []
         for lane_x in lanes:
             candidates.append([(lane_x, start_y), (lane_x, target_y), (target_x, target_y)])
 
@@ -860,7 +943,7 @@ class FactoryController:
         return min(line_x, lane_x)
 
     def _segment_is_safe(self, owner: str, x0: float, y0: float,
-                         x1: float, y1: float, samples: int = 24) -> bool:
+                         x1: float, y1: float, samples: int = 96) -> bool:
         for i in range(samples + 1):
             t = i / samples
             x = x0 + (x1 - x0) * t
@@ -907,18 +990,33 @@ class FactoryController:
             self.sim.setObjectParent(held_part, attach_to, True)
         arm.move_to_home()
 
-    def _finish_product(self, arm, product_handle, output_bin_handle):
+    def _finish_product(self, arm, product_handle, output_bin_handle, output_line: str):
         product_pos = self.sim.getObjectPosition(product_handle, -1)
         picked = arm.pick_from_position(product_pos, product_handle)
         self._require_action(picked, arm, "finish pick")
         self._require_holding(arm, product_handle, "finish pick")
         bin_pos = self.sim.getObjectPosition(output_bin_handle, -1)
-        drop = [bin_pos[0], bin_pos[1], SEGMENT_HEIGHT + SHUTTLE_PART_Z]
+        local_offset = self._next_output_drop_offset(output_line)
+        drop = [
+            bin_pos[0] + local_offset[0],
+            bin_pos[1] + local_offset[1],
+            SEGMENT_HEIGHT + SHUTTLE_PART_Z,
+        ]
         placed = arm.place_at_position(
             drop, parent_handle=output_bin_handle,
-            z_offset=SHUTTLE_PART_Z)
+            z_offset=SHUTTLE_PART_Z,
+            local_offset=local_offset)
         self._require_action(placed, arm, "finish place")
         arm.move_to_home()
+
+    def _next_output_drop_offset(self, output_line: str) -> tuple[float, float]:
+        count = self.output_drop_counts.get(output_line, 0)
+        self.output_drop_counts[output_line] = count + 1
+        if count == 0:
+            return (0.0, 0.0)
+        magnitude = ((count + 1) // 2) * OUTPUT_DROP_STEP_X
+        direction = 1.0 if count % 2 == 1 else -1.0
+        return (direction * magnitude, 0.0)
 
     def _inspect(self, shuttle, owner: str, x: float, y: float):
         self._move_shuttle(owner, shuttle, x, y, "camera")

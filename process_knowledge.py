@@ -6,26 +6,42 @@ from __future__ import annotations
 PRODUCT_SPECS = {
     "car": {
         "line": "A",
-        "base_part": "car_base",
+        "base_part": {"part": "car_base", "source_line": "A"},
         "assemblies": [
-            {"part": "car_frame", "attach_to": "car_base", "layer": 1},
+            {
+                "part": "car_frame",
+                "source_line": "B",
+                "attach_to": "car_base",
+                "layer": 1,
+            },
         ],
         "constraints": [
-            "car_base stays on the main A shuttle.",
-            "car_frame is supplied by auxiliary shuttle A2.",
-            "car_frame is held only during the assembly transfer.",
+            "car_base is sourced from A and assembled on product line A.",
+            "car_frame is sourced from B and transferred to product line A.",
+            "car_frame is held only after it arrives on line A for final assembly.",
         ],
     },
     "phone": {
         "line": "B",
-        "base_part": "phone_base",
+        "base_part": {"part": "phone_base", "source_line": "A"},
         "assemblies": [
-            {"part": "screen", "attach_to": "phone_base", "layer": 1},
-            {"part": "camera_module", "attach_to": "phone_base", "layer": 2},
+            {
+                "part": "screen",
+                "source_line": "B",
+                "attach_to": "phone_base",
+                "layer": 1,
+            },
+            {
+                "part": "camera_module",
+                "source_line": "B",
+                "attach_to": "phone_base",
+                "layer": 2,
+            },
         ],
         "constraints": [
-            "phone_base stays on the main B shuttle.",
-            "screen and camera_module are supplied by auxiliary shuttle B2.",
+            "phone_base is sourced from A and transferred to product line B.",
+            "screen and camera_module are sourced from B.",
+            "screen and camera_module are supplied by auxiliary shuttle B2 during phone assembly.",
             "screen must be installed before camera_module.",
             "supplied parts are held only during the assembly transfer.",
         ],
@@ -41,12 +57,16 @@ def build_process_knowledge_prompt() -> str:
     for product, spec in PRODUCT_SPECS.items():
         lines.append(f"- {product}:")
         lines.append(f"  line: {spec['line']}")
-        lines.append(f"  base_part: {spec['base_part']}")
+        base = spec["base_part"]
+        lines.append(
+            f"  base_part: {base['part']} from source line {base['source_line']}"
+        )
         lines.append("  assemblies:")
         for assembly in spec["assemblies"]:
             lines.append(
                 "    "
-                f"{assembly['part']} -> {assembly['attach_to']} "
+                f"{assembly['part']} from source line {assembly['source_line']} "
+                f"-> {assembly['attach_to']} "
                 f"(layer {assembly['layer']})"
             )
         lines.append("  constraints:")

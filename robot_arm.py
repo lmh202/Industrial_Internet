@@ -23,7 +23,7 @@ TIP_DOWN_ORIENT = [0, math.pi / 2, 0]
 # 抬起高度（pick/place 时的安全高度）
 SAFE_Z = SEGMENT_HEIGHT + 0.05     # 安全高度（平台上方 50mm = 0.12m）
 GRASP_CLEARANCE = 0.005            # 夹爪接近时的间距
-MAX_PICK_DISTANCE = 0.03           # 最大抓取距离 30mm（超过则不执行）
+MAX_PICK_DISTANCE = 0.018          # 最大抓取距离 18mm（超过则不执行）
 
 
 class RobotArmController:

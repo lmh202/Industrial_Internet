@@ -103,12 +103,19 @@ def _unload(name: str, line: str) -> ToolSpec:
 
 
 def _cross_line(name: str, source: str, target: str) -> ToolSpec:
+    if name.endswith("_Transfer"):
+        description = (
+            f"Move the line {source} and line {target} shuttles directly from "
+            "pick to the cross-line transfer position, then transfer the part."
+        )
+    else:
+        description = f"Move a part from line {source} shuttle to line {target} shuttle."
     return ToolSpec(
         name=name,
         category="cross_line",
         args_schema=("part", "target_offset?"),
         executor_name="_execute_cross_line_tool",
-        description=f"Move a part from line {source} shuttle to line {target} shuttle.",
+        description=description,
         source_line=source,
         target_line=target,
         prompt_example=f"{name}(part, target_offset?)",
@@ -125,13 +132,19 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
         _transport("Transport_A_Assemble_Camera", "A", "assemble", "camera"),
         _transport("Transport_A_Camera_Output", "A", "camera", "output"),
         _transport("Transport_A_Output_Pick", "A", "output", "pick"),
+        _transport("Transport_A_Transfer_Pick", "A", "transfer", "pick"),
         _transport("Transport_A2_Clear_Pick", "A2", "clear", "pick"),
+        _transport("Transport_A2_Clear_Transfer", "A2", "clear", "transfer"),
+        _transport("Transport_A2_Transfer_Assemble", "A2", "transfer", "assemble"),
         _transport("Transport_A2_Pick_Assemble", "A2", "pick", "assemble"),
         _transport("Transport_A2_Assemble_Clear", "A2", "assemble", "clear"),
         _transport("Transport_B_Pick_Assemble", "B", "pick", "assemble"),
         _transport("Transport_B_Assemble_Pick", "B", "assemble", "pick"),
+        _transport("Transport_B_Transfer_Pick", "B", "transfer", "pick"),
+        _transport("Transport_B_Transfer_Forward", "B", "transfer", "forward"),
         _transport("Transport_B_Assemble_Forward", "B", "assemble", "forward"),
         _transport("Transport_B_Forward_Assemble", "B", "forward", "assemble"),
+        _transport("Transport_B_Forward_Camera", "B", "forward", "camera"),
         _transport("Transport_B_Assemble_Clear", "B", "assemble", "clear"),
         _transport("Transport_B_Clear_Assemble", "B", "clear", "assemble"),
         _transport("Transport_B_Assemble_Camera", "B", "assemble", "camera"),
@@ -140,9 +153,9 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
         _transport("Transport_B2_Clear_Pick", "B2", "clear", "pick"),
         _transport("Transport_B2_Pick_Assemble", "B2", "pick", "assemble"),
         _transport("Transport_B2_Assemble_Clear", "B2", "assemble", "clear"),
-        _load("Load_A_Pick", "A", "car_base or car_frame"),
-        _load("Load_A2_Pick", "A2", "car_frame"),
-        _load("Load_B_Pick", "B", "phone_base or camera_module"),
+        _load("Load_A_Pick", "A", "car_base or phone_base"),
+        _load("Load_A2_Pick", "A2", "deprecated car_frame compatibility"),
+        _load("Load_B_Pick", "B", "car_frame, screen, or camera_module"),
         _load("Load_B2_Pick", "B2", "screen or camera_module"),
         _hold("Hold_A_Assemble", "A", "A"),
         _hold("Hold_A2_Assemble", "A2", "A"),
@@ -155,7 +168,10 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
         _unload("Unload_A_Output", "A"),
         _unload("Unload_B_Output", "B"),
         _cross_line("Transport_A_B", "A", "B"),
+        _cross_line("Transport_A_B_Transfer", "A", "B"),
         _cross_line("Transport_B_A", "B", "A"),
+        _cross_line("Transport_B_A_Transfer", "B", "A"),
+        _cross_line("Transport_B_A2", "B", "A2"),
     )
 }
 

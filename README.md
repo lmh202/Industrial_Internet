@@ -14,13 +14,13 @@ pip install coppeliasim-zmqremoteapi-client numpy
 默认使用本地 Ollama 模型解析自然语言，不调用云端 API。请先确认本机已安装并启动 Ollama，且已拉取当前使用的模型：
 
 ```bash
-ollama pull qwen3
+ollama pull qwen3.6
 ```
 
 默认配置位于 `config.py`：
 
 ```bash
-set BASE_MODEL=qwen3:latest
+set BASE_MODEL=qwen3.6:latest
 set BASE_URL=http://localhost:11434/v1
 set API_KEY=ollama
 set LLM_TIMEOUT=360
@@ -107,13 +107,11 @@ python main.py --parse-only "连续生产一辆车和两部手机"
   "steps": [
     {"tool": "Load_A_Pick", "args": {"part": "car_base"}},
     {"tool": "Transport_A_Pick_Assemble", "args": {}},
-    {"tool": "Transport_A_Assemble_Forward", "args": {}},
-    {"tool": "Transport_A2_Clear_Pick", "args": {}},
-    {"tool": "Load_A2_Pick", "args": {"part": "car_frame"}},
-    {"tool": "Transport_A2_Pick_Assemble", "args": {}},
-    {"tool": "Hold_A2_Assemble", "args": {"part": "car_frame"}},
-    {"tool": "Transport_A2_Assemble_Clear", "args": {}},
-    {"tool": "Transport_A_Forward_Assemble", "args": {}},
+    {"tool": "Load_B_Pick", "args": {"part": "car_frame"}},
+    {"tool": "Transport_B_Pick_Assemble", "args": {}},
+    {"tool": "Transport_B_A", "args": {"part": "car_frame"}},
+    {"tool": "Transport_B_Assemble_Pick", "args": {}},
+    {"tool": "Hold_A_Assemble", "args": {"part": "car_frame"}},
     {"tool": "Place_A_Assemble", "args": {"part": "car_frame", "attach_to": "car_base", "layer": 1}},
     {"tool": "Transport_A_Assemble_Camera", "args": {}},
     {"tool": "Inspect_A", "args": {}},
@@ -127,10 +125,21 @@ python main.py --parse-only "连续生产一辆车和两部手机"
 
 允许的工具函数：
 
+Material-source correction:
+
+- Source A contains `car_base`, `phone_base`, `phone_base`.
+- Source B contains `car_frame`, `screen`, `camera_module`.
+- Product assembly remains fixed: cars are assembled on A, phones are assembled on B.
+- `Load_A_Pick(part)` only loads A-source material: `car_base` or `phone_base`.
+- `Load_B_Pick(part)` only loads B-source material: `car_frame`, `screen`, or `camera_module`.
+- `Load_B2_Pick(part)` remains the B product-line auxiliary shuttle for phone `screen` and `camera_module` assembly.
+- New plans should not generate `Load_A2_Pick(car_frame)` for car production; car frames now come from B and use `Transport_B_A`.
+- Phone bases now come from A and use `Transport_A_B` before B-line phone assembly.
+
 ```text
-Load_A_Pick(part, local_offset?)
-Load_A2_Pick(car_frame)
-Load_B_Pick(part, local_offset?)
+Load_A_Pick(car_base or phone_base, local_offset?)
+Load_A2_Pick(car_frame)  # deprecated compatibility; planner should not generate it
+Load_B_Pick(car_frame or screen or camera_module, local_offset?)
 Load_B2_Pick(screen or camera_module)
 Transport_A_Pick_Assemble
 Transport_A_Assemble_Pick
